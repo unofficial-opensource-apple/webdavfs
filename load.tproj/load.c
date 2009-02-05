@@ -1,10 +1,7 @@
-
 /*
- * Copyright (c) 1999 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2000-2004 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
  * 
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
@@ -22,15 +19,6 @@
  * limitations under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
- */
-/*      @(#)load.c      *
- *      (c) 2000   Apple Computer, Inc.  All Rights Reserved
- *
- *
- *      load.c -- WebDAV setuid load command
- *
- *      MODIFICATION HISTORY:
- *              10-APR-2000     Clark Warner      File Creation
  */
 
 #include <sys/types.h>

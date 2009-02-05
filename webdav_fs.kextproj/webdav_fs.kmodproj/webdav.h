@@ -1,8 +1,28 @@
-#ifndef _WEBDAV_H_INCLUDE
-#define _WEBDAV_H_INCLUDE
-
-
-/* Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved */
+/*
+ * Copyright (c) 1999-2004 Apple Computer, Inc. All rights reserved.
+ *
+ * @APPLE_LICENSE_HEADER_START@
+ * 
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
+ * 
+ * The Original Code and all software distributed under the License are
+ * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
+ * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
+ * 
+ * @APPLE_LICENSE_HEADER_END@
+ */
+/*
+ * Copyright (c) 1995 NeXT Computer, Inc. All Rights Reserved
+ */
 /*
  * Copyright (c) 1992, 1993
  *	The Regents of the University of California.  All rights reserved.
@@ -13,6 +33,9 @@
  *	@(#)webdav.h	8.4 (Berkeley) 1/21/94
  */
 
+#ifndef _WEBDAV_H_INCLUDE
+#define _WEBDAV_H_INCLUDE
+
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/param.h>
@@ -20,6 +43,7 @@
 #include <sys/queue.h>
 #include <sys/lock.h>
 #include <sys/ioccom.h>
+#include <mach/boolean.h>
 
 /* Webdav file operation constants */
 #define WEBDAV_LOOKUP			1
@@ -57,15 +81,9 @@
 
 /* Shared (kernel & processs) WebDAV structures */
 
-typedef int webdav_filehandle_t;
 typedef int webdav_filetype_t;
 
 /* Shared (kernel & process) WebDAV defninitions */
-
-// ¥¥¥¥ passed in from process
-#define WEBDAV_ROOTFILEID		3
-// ¥¥¥¥ passed in from process
-#define WEBDAV_DIR_SIZE			2048
 
 /*
  * object_ref is the reference used to find a file system object in userland.
@@ -73,6 +91,31 @@ typedef int webdav_filetype_t;
  * object use it.
  */
 typedef int object_ref;
+
+/*
+ * IMPORTANT: struct user_webdav_args, struct webdav_args, and webdav_mount()
+ * must all be changed if the structure changes.
+ */
+struct user_webdav_args
+{
+	user_addr_t pa_mntfromname;					/* mntfromname */
+	int	pa_version;								/* argument struct version */
+	int pa_socket_namelen;						/* Socket to server name length */
+	user_addr_t pa_socket_name;					/* Socket to server name */
+	user_addr_t pa_vol_name;					/* volume name */
+	u_int32_t pa_flags;							/* flag bits for mount */
+	object_ref pa_root_obj_ref;					/* root object_ref */
+	ino_t pa_root_fileid;						/* root fileid */
+	off_t pa_dir_size;							/* size of directories */
+	/* pathconf values: >=0 to return value; -1 if not supported */
+	int pa_link_max;							/* maximum value of a file's link count */
+	int pa_name_max;							/* The maximum number of bytes in a file name (does not include null at end) */
+	int pa_path_max;							/* The maximum number of bytes in a relative pathname (does not include null at end) */
+	int pa_pipe_buf;							/* The maximum number of bytes that can be written atomically to a pipe (usually PIPE_BUF if supported) */
+	int pa_chown_restricted;					/* Return _POSIX_CHOWN_RESTRICTED if appropriate privileges are required for the chown(2) */
+	int pa_no_trunc;							/* Return _POSIX_NO_TRUNC if file names longer than KERN_NAME_MAX are truncated */
+	/* end of webdav_args version 1 */
+};
 
 struct webdav_args
 {
@@ -85,7 +128,6 @@ struct webdav_args
 	object_ref pa_root_obj_ref;					/* root object_ref */
 	ino_t pa_root_fileid;						/* root fileid */
 	off_t pa_dir_size;							/* size of directories */
-	time_t pa_lookup_timeout;					/* max number of seconds before a lookup is required */
 	/* pathconf values: >=0 to return value; -1 if not supported */
 	int pa_link_max;							/* maximum value of a file's link count */
 	int pa_name_max;							/* The maximum number of bytes in a file name (does not include null at end) */
@@ -98,6 +140,7 @@ struct webdav_args
 
 /* Defines for webdav_args pa_flags field */
 #define WEBDAV_SUPPRESSALLUI	0x00000001		/* SuppressAllUI flag */
+#define WEBDAV_SECURECONNECTION	0x00000002		/* Secure connection flag (the connection to the server is secure) */
 
 struct webdav_cred
 {
@@ -149,7 +192,7 @@ struct webdav_request_mkdir
 	object_ref		dir;				/* The object_ref for the directory in which the file is to be created */
 	mode_t			mode;				/* file type and initial file access permissions for the file */
 	size_t			name_length;		/* length of name */
-	char			name[];				/* The name that is to be associated with the created file */
+	char			name[];				/* The name that is to be associated with the created directory */
 };
 
 struct webdav_reply_mkdir
@@ -163,7 +206,6 @@ struct webdav_request_open
 {
 	struct webdav_cred pcr;				/* user and groups */
 	object_ref		obj_ref;			/* object_ref of object */
-	webdav_filetype_t obj_type;			/* WEBDAV_FILE_TYPE or WEBDAV_DIR_TYPE */
 	int				flags;				/* file access flags (O_RDONLY, O_WRONLY, etc.) */
 	int				ref;				/* the reference to the webdav object that the cache object should be associated with */
 };
@@ -374,7 +416,6 @@ union webdav_reply
 };
 
 #define UNKNOWNUID ((uid_t)99)
-#define WEBDAV_IOSIZE (4*1024)					/* should be < WEBDAV_MAX_IO_BUFFER_SIZE */
 
 /*
  * The WEBDAV_CONNECTION_DOWN_MASK bit is set by the code in send_reply() in
@@ -394,12 +435,6 @@ union webdav_reply
 #define	WEBDAVIOC_INVALIDATECACHES	_IO('w', 1)
 #define	WEBDAV_INVALIDATECACHES		IOCBASECMD(WEBDAVIOC_INVALIDATECACHES)
 
-struct webdavcachefileref
-{
-	int			ref;
-	int			fd;
-};
-
 /*
  * Sysctl values for WebDAV FS
  */
@@ -411,6 +446,8 @@ struct webdavcachefileref
  */
 #define WEBDAV_ASSOCIATECACHEFILE_SYSCTL   1
 
+#define WEBDAV_MAX_KEXT_CONNECTIONS 128			/* maximum number of open connections to user-land server */
+
 #ifdef KERNEL
 
 struct webdavmount
@@ -420,8 +457,8 @@ struct webdavmount
 	struct mount *pm_mountp;					/* vfs structure for this filesystem */
 	char *pm_vol_name;							/* volume name */
 	struct sockaddr *pm_socket_name;			/* Socket to server name */
+	u_int32_t pm_open_connections;				/* number of connections opened to user-land server */
 	off_t pm_dir_size;							/* size of directories */
-	time_t pm_lookup_timeout;					/* number of seconds before a lookup is required */
 	/* pathconf values: >=0 to return value; -1 if not supported */
 	int pm_link_max;							/* maximum value of a file's link count (1 for file systems that do not support link counts) */
 	int pm_name_max;							/* The maximum number of bytes in a file name (does not include null at end) */
@@ -435,7 +472,8 @@ struct webdavnode
 {
 	LIST_ENTRY(webdavnode) pt_hash;				/* Hash chain. */
 	struct mount *pt_mountp;					/* vfs structure for this filesystem */
-	vnode_t pt_vnode;							/* Pointer to parent vnode */
+	vnode_t pt_parent;							/* Pointer to parent vnode */
+	vnode_t pt_vnode;							/* Pointer to vnode */
 	vnode_t pt_cache_vnode;						/* Pointer to cached file vnode */
 	object_ref pt_obj_ref;						/* object_ref from lookup */
 	ino_t pt_fileid;							/* file id */
@@ -443,9 +481,8 @@ struct webdavnode
 	struct timespec pt_mtime;					/* time of last data modification */
 	struct timespec pt_ctime;					/* time of last file status change */
 	off_t pt_filesize;							/* what we think the filesize is */
-	time_t pt_timestamp;						/* time we created or looked up on the server */
 	u_int32_t pt_status;						/* WEBDAV_DIRTY, etc */
-	u_int32_t pt_opencount;						/* count of opens */
+	u_int32_t pt_diropencount;					/* reference count of opens on directory */
 };
 
 struct open_associatecachefile
@@ -463,8 +500,7 @@ struct open_associatecachefile
 #define WEBDAV_DIR_NOT_LOADED   0x00000010		/* Indicates that an open directory is empty and needs to be populated from the server */
 #define WEBDAV_INIT				0x00000020		/* Indicates that the webdavnode is in the process of being initialized */
 #define WEBDAV_WAITINIT			0x00000040		/* Indicates that someone is sleeping (on webdavnode) waiting for initialization to finish */
-#define WEBDAV_ISMAPPED			0x00000080		/* Indicates that the file is mapped */
-#define WEBDAV_WASMAPPED		0x00000100		/* Indicates that the file is or was mapped */
+#define WEBDAV_WASMAPPED		0x00000080		/* Indicates that the file is or was mapped */
 
 /* Defines for webdavmount pm_status field */
 
@@ -472,9 +508,10 @@ struct open_associatecachefile
 #define WEBDAV_MOUNT_STATFS 0x00000002			/* statfs is in progress */
 #define WEBDAV_MOUNT_STATFS_WANTED 0x00000004	/* statfs wakeup is wanted */
 #define WEBDAV_MOUNT_TIMEO 0x00000008			/* connection to webdav server was lost */
-#define WEBDAV_MOUNT_FORCE 0x00000010			/* doing a forced unmount. */
-#define WEBDAV_MOUNT_DEAD 0x00000020			/* doing a forced unmount. */
-#define WEBDAV_MOUNT_SUPPRESS_ALL_UI 0x00000040	/* suppress UI when connection is lost */
+#define WEBDAV_MOUNT_DEAD 0x00000010			/* file system is dead. */
+#define WEBDAV_MOUNT_SUPPRESS_ALL_UI 0x00000020	/* suppress UI when connection is lost */
+#define WEBDAV_MOUNT_CONNECTION_WANTED 0x000000040 /* wakeup is wanted to start another connection with user-land server */
+#define WEBDAV_MOUNT_SECURECONNECTION 0x000000080 /* the connection to the server is secure */
 
 /* Webdav sizes for statfs */
 
@@ -488,7 +525,6 @@ struct open_associatecachefile
 #define VFSTOWEBDAV(mp) ((struct webdavmount *)(vfs_fsprivate(mp)))
 #define VTOWEBDAV(vp) ((struct webdavnode *)(vnode_fsnode(vp)))
 #define WEBDAVTOV(pt) ((pt)->pt_vnode)
-#define WEBDAVWASMAPPED(vp) (VTOWEBDAV(vp)->pt_status & WEBDAV_WASMAPPED)
 
 /* Other defines */
 
@@ -515,6 +551,18 @@ struct open_associatecachefile
  * Apache's mod_dav buffers 32K in the stream, so that's we'll use.
  */ 
 #define WEBDAV_WAIT_IF_WITHIN	32768
+
+/*
+ * There are several loops where the code waits for a cache file to be downloaded,
+ * or for a specific part of the cache file to be downloaded. This constant controls
+ * how often the cache vnode is polled (with VNOP_GETATTR). The less often we poll,
+ * the higher the latency between getting data and using it.
+ *
+ * A network connection with 35mbps (maximum cable) can give us a page every millisecond.
+ * A network connection with 3mbps (typical capped cable or high speed DSL) can give us a page every 10 milliseconds.
+ * For typical home networks over cable or DSL, 10 ms should be OK. Thus... (10 * 1000 * 1000) nanoseconds.
+ */
+#define WEBDAV_WAIT_FOR_PAGE_TIME (10 * 1000 * 1000)
 
 /* the number of seconds soreceive() should block
  * before rechecking the server process state
@@ -565,8 +613,6 @@ extern int webdav_get(
 	struct timespec obj_ctime,  /* time of last file status change */
 	off_t obj_filesize,			/* object's filesize */
 	vnode_t *vpp);				/* vnode returned here */
-
-extern int webdav_vnop_getattrlist(struct vnop_getattrlist_args *ap);
 
 extern int webdav_assign_ref(struct open_associatecachefile *associatecachefile, int *ref);
 extern void webdav_release_ref(int ref);

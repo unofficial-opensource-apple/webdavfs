@@ -1,14 +1,7 @@
-
-#ifndef _VNOPS_H_INCLUDE
-#define _VNOPS_H_INCLUDE
-
-
 /*
- * Copyright (c) 1999 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2004 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
- * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
  * 
  * This file contains Original Code and/or Modifications of Original Code
  * as defined in and that are subject to the Apple Public Source License
@@ -27,14 +20,15 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
-/*		@(#)vnops.h
-*
-*		(c) 1999 Apple Computer, Inc.  All Rights Reserved
-*
-*		HISTORY
-*		01-June-1999	CHW Created this file
-*/
 
-// еееее OBSOLETE HEADER
+#ifndef __ENCODEDSOURCEID_H__
+#define __ENCODEDSOURCEID_H__
 
-#endif /*ifndef _VNOPS_H_INCLUDE */
+/*
+ *  EncodedSourceID.h
+ *  SourceIDValidation
+ */
+
+int GetEncodedSourceID(char encodedIdBuffer[32]);
+
+#endif
