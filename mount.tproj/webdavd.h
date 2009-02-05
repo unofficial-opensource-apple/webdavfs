@@ -36,26 +36,18 @@
  *
  *	@(#)webdavd.h	8.1 (Berkeley) 6/5/93
  *
- * $Id: webdavd.h,v 1.19.12.1 2003/11/01 00:00:18 lutherj Exp $
+ * $Id: webdavd.h,v 1.25 2004/06/03 20:59:03 lutherj Exp $
  */
 
-#include <sys/cdefs.h>
+#include <sys/types.h>
+#include <sys/param.h>
 #include <sys/vnode.h>
 #include <sys/mount.h>
-#include "../webdav_fs.kextproj/webdav_fs.kmodproj/vnops.h"
+#include <stdio.h>
 #include "../webdav_fs.kextproj/webdav_fs.kmodproj/webdav.h"
-#include "webdav_mount.h"
 #include "webdav_memcache.h"
-#include "webdav_authcache.h"
 #include "webdav_inode.h"
 #include <pthread.h>
-
-/*
- * Meta-chars in an RE.	 Paths in the config file containing
- * any of these characters will be matched using regexec, other
- * paths will be prefix-matched.
- */
-#define RE_CHARS ".|()[]*+?\\^$"
 
 /* webdav process structures */
 
@@ -155,8 +147,9 @@ struct webdav_lookup_info
 struct webdav_stat_struct
 {
 	const char *orig_uri;
-	struct vattr *statbuf;
+	struct stat *statbuf;
 	int uid;
+	int add_cache;
 };
 
 struct webdav_refreshdir_struct
@@ -183,57 +176,59 @@ struct webdav_read_byte_info
 /*
  * webdav functions
  */
-extern int webdav_open __P((int proxy_ok, struct webdav_cred *pcr, char *key,
-							int * a_socket,
-							int so, int *fdp, webdav_filetype_t file_type,
-							webdav_filehandle_t * a_file_handle));
+extern int webdav_lookup(struct webdav_request_lookup *request_lookup,
+		struct webdav_reply_lookup *reply_lookup,
+		int proxy_ok, int *a_socket);
 
-extern int webdav_refreshdir __P((int proxy_ok, struct webdav_cred *pcr,
-								 webdav_filehandle_t file_handle, int * a_socket,
-								 int cache_appledoubleheader));
+extern int webdav_create(struct webdav_request_create *request_create,
+		struct webdav_reply_create *reply_create,
+		int proxy_ok, int *a_socket);
 
+extern int webdav_open(struct webdav_request_open *request_open,
+		struct webdav_reply_open *reply_open,
+		int proxy_ok, int *a_socket);
 
-extern int webdav_lookupinfo __P((int proxy_ok,struct webdav_cred *pcr,
-							  char * key, int * a_socket,
-								  webdav_filehandle_t * a_file_type));
+extern int webdav_close(struct webdav_request_close *request_close,
+		int proxy_ok, int *a_socket);
 
-extern int webdav_stat __P((int proxy_ok,struct webdav_cred *pcr,
-							char * key,int * a_socket,
-							int so, struct vattr * statbuf));
+extern int webdav_getattr(struct webdav_request_getattr *request_getattr,
+		struct webdav_reply_getattr *reply_getattr,
+		int proxy_ok, int *a_socket);
 
-extern int webdav_statfs __P((int proxy_ok, struct webdav_cred *pcr,
-							  char * key, int * a_socket,
-							  int so, struct statfs *statfsbuf));
+extern int webdav_read(struct webdav_request_read *request_read,
+		char **a_byte_addr, size_t *a_size,
+		int proxy_ok, int *a_socket);
 
-extern int webdav_close __P((int proxy_ok,webdav_filehandle_t file_type,
-							 int * a_socket));
+extern int webdav_fsync(struct webdav_request_fsync *request_fsync,
+		int proxy_ok, int *a_socket);
 
-extern int webdav_mount __P((int proxy_ok, char *key, int * a_socket,
-							 int * a_mount_args));
+extern int webdav_remove(struct webdav_request_remove *request_remove,
+		int proxy_ok, int *a_socket);
 
-extern int webdav_fsync __P((int proxy_ok, struct webdav_cred * pcr, webdav_filehandle_t file_handle,
-							 int * a_socket));
+extern int webdav_rename(struct webdav_request_rename *request_rename,
+		int proxy_ok, int *a_socket);
 
-extern int webdav_create  __P((int proxy_ok, struct webdav_cred * pcr, char * key,
-							   int * a_socket, webdav_filetype_t file_type));
+extern int webdav_mkdir(struct webdav_request_mkdir *request_mkdir,
+		struct webdav_reply_mkdir *reply_mkdir,
+		int proxy_ok, int *a_socket);
+		
+extern int webdav_rmdir(struct webdav_request_rmdir *request_rmdir,
+		int proxy_ok, int *a_socket);
 
-extern int webdav_delete  __P((int proxy_ok, struct webdav_cred * pcr, char * key,
-							   int * a_socket,
-							   webdav_filetype_t file_type));
+extern int webdav_readdir(struct webdav_request_readdir *request_readdir,
+		int proxy_ok, int *a_socket);
 
-extern int webdav_rename  __P((int proxy_ok, struct webdav_cred * pcr, char * key,
-							   int * a_socket));
+extern int webdav_statfs(struct webdav_request_statfs *request_statfs,
+		struct webdav_reply_statfs *reply_statfs,
+		int proxy_ok, int *a_socket);
 
-extern int webdav_read_bytes __P((int proxy_ok,struct webdav_cred * pcr,char *key,
-								  int * a_socket,char ** a_byte_addr,
-								  off_t * a_size));
+extern int webdav_invalidate_caches(struct webdav_request_invalcaches *request_invalcaches);
 
-extern int webdav_lock	__P((int proxy_ok, struct file_array_element * array_elem,
-							 int * a_socket));
+extern int webdav_mount(char *key, int *a_mount_args,
+		int proxy_ok, int *a_socket);
 
-extern void name_tempfile  __P((char *buf, char *seed_prefix));
-
-extern int webdav_invalidate_caches __P((void));
+extern int webdav_lock(struct file_array_element *file_array_elem,
+		int proxy_ok, int *a_socket);
 
 extern int webdav_cachefile_init(void);
 
@@ -265,7 +260,7 @@ extern int webdav_cachefile_init(void);
 #define WEBDAV_DOWNLOAD_TERMINATED 3
 #define WEBDAV_DOWNLOAD_ABORTED 4
 
-#define PRIVATE_LOAD_COMMAND "/usr/libexec/load_webdav"
+#define PRIVATE_LOAD_COMMAND "/System/Library/Extensions/webdav_fs.kext/Contents/Resources/load_webdav"
 #define PRIVATE_UNMOUNT_COMMAND "/sbin/umount"
 #define PRIVATE_UNMOUNT_FLAGS "-f"
 
@@ -285,8 +280,8 @@ extern int webdav_cachefile_init(void);
 /*
  * Global functions
  */
-extern void activate __P((int so, int proxy_ok, int * socketptr));
-extern void webdav_pulse_thread __P((void *arg));
+extern void activate(int so, int proxy_ok, int *socketptr);
+extern void webdav_pulse_thread(void *arg);
 extern void webdav_kill(int message);
 extern int resolve_http_hostaddr(void);
 
@@ -311,4 +306,6 @@ extern off_t webdav_first_read_len;
 extern char *gUserAgentHeader;
 extern uid_t process_uid;
 extern int gSuppressAllUI;
-extern char webdavcache_path[MAXPATHLEN];
+extern char webdavcache_path[MAXPATHLEN + 1];
+extern int gvfc_typenum;
+extern webdav_file_record_t gfilerec;

@@ -46,52 +46,42 @@ static char sccsid[] = "@(#)mount_webdav.c	8.6 (Berkeley) 4/26/95";
 #endif
 #endif /* not lint */
 
+#include <sys/types.h>
+#include <sys/errno.h>
+#include <sys/un.h>
 #include <sys/param.h>
 #include <sys/wait.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/stat.h>
-#include <sys/syslimits.h>
-#include <sys/syslog.h>
-#include <sys/param.h>
-#include <sys/mount.h>
 #include <sys/sysctl.h>
 #include <sys/resource.h>
 #include <sys/mount.h>
+#include <sys/syslog.h>
+#include <sys/syslimits.h>
+#include <sys/socket.h>
 
-#include <err.h>
-#include <errno.h>
-#include <netdb.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <unistd.h>
-#include <pthread.h>
-#include <kvm.h>
-#include <signal.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include <mach/mach_error.h>
-#include <DiskArbitration/DiskArbitration.h>
+#include <netdb.h>
+#include <string.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
+#include <pthread.h>
 
-#include <ctype.h>
 #include <CoreFoundation/CFString.h>
-/* Needed to read the HTTP proxy configuration from the configuration 
-   database */
-#define USE_SYSTEMCONFIGURATION_PUBLIC_APIS
 #include <SystemConfiguration/SystemConfiguration.h>
 
-#include "fetch.h"
 #include "mntopts.h"
-#include "pathnames.h"
 #include "webdavd.h"
-#include "webdav_mount.h"
 #include "webdav_memcache.h"
 #include "webdav_authcache.h"
 #include "webdav_requestqueue.h"
 #include "webdav_inode.h"
+#include "pathnames.h"
+#include "fetch.h"
+
 #include "../webdav_fs.kextproj/webdav_fs.kmodproj/webdav.h"
 
 /*****************************************************************************/
@@ -163,14 +153,22 @@ uid_t process_uid = -1;
 
 int gSuppressAllUI = 0;
 
-char webdavcache_path[MAXPATHLEN] = "";
+char webdavcache_path[MAXPATHLEN + 1] = "";
+
+char gVolumeName[NAME_MAX + 1] = "";
+
+int gvfc_typenum = -1;   /* vfc.vfc_typenum for our file system */
+
+webdav_file_record_t gfilerec;
 
 /*****************************************************************************/
 
 static void usage(void)
 {
 	(void)fprintf(stderr,
-		"usage: mount_webdav [-o options] dav-enabled-uri mount-point\n");
+		"usage: mount_webdav [-a<fd>] [-o options] [-v <volume name>]\n");
+	(void)fprintf(stderr,
+		"\t<WebDAV_URL> node\n");
 	exit(EXIT_FAILURE);
 }
 
@@ -231,14 +229,8 @@ Return:
 	}
 
 	stop_proxy_update();
-
-	if (diskarb_inited)
-	{
-		/* Tell AutoDiskMount to send notifications if it needs to */
-		(void) DiskArbRefresh_auto();
-	}
 	
-	exit(EXIT_FAILURE);
+	_exit(EXIT_FAILURE);
 }
 
 /*****************************************************************************/
@@ -838,7 +830,6 @@ int main(int argc, char *argv[])
 	int rc;
 	int so;
 	int error = 0;
-	kern_return_t daconnect_status;
 
 	int ch;
 	int i;
@@ -924,11 +915,11 @@ int main(int argc, char *argv[])
 	/*
 	 * Crack command line args
 	 */
-	while ((ch = getopt(argc, argv, "Sa:o:")) != -1)
+	while ((ch = getopt(argc, argv, "Sa:o:v:")) != -1)
 	{
 		switch (ch)
 		{
-			case 'a':							/* get the username and password from URLMount */
+			case 'a':	/* get the username and password from URLMount */
 				{
 					int fd = atoi(optarg), 		/* fd from URLMount */
 					zero = 0, i = 0, len1 = 0, len2 = 0;
@@ -952,18 +943,25 @@ int main(int argc, char *argv[])
 								}
 							}
 						}
-
-						/* zero the contents of the file */
-						(void)lseek(fd, 0LL, SEEK_SET);
-						for (i = 0; i < (((len1 + len2) / (int)sizeof(int)) + 3); i++)
+						
+						/* zero contents of file and close it if
+						 * fd is not STDIN_FILENO, STDOUT_FILENO or STDERR_FILENO
+						 */
+						if ( (fd != STDIN_FILENO) &&
+							 (fd != STDOUT_FILENO) &&
+							 (fd != STDERR_FILENO) )
 						{
-							if (write(fd, (char *) & zero, sizeof(int)) < 0)
+							(void)lseek(fd, 0LL, SEEK_SET);
+							for (i = 0; i < (((len1 + len2) / (int)sizeof(int)) + 3); i++)
 							{
-								break;
+								if (write(fd, (char *) & zero, sizeof(int)) < 0)
+								{
+									break;
+								}
 							}
+							(void)fsync(fd);
+							(void)close(fd);
 						}
-						(void)fsync(fd);
-						(void)close(fd);
 					}
 					break;
 				}
@@ -972,8 +970,21 @@ int main(int argc, char *argv[])
 				gSuppressAllUI = 1;
 				break;
 			
-			case 'o':
+			case 'o':	/* Get the mount options */
 				error = getmntopts(optarg, mopts, &mntflags, 0);
+				break;
+			
+			case 'v':	/* Use argument as volume name instead of parsing
+						 * the mount point path for the volume name
+						 */
+				if ( strlen(optarg) <= NAME_MAX )
+				{
+					strcpy(gVolumeName, optarg);
+				}
+				else
+				{
+					error = 1;
+				}
 				break;
 			
 			default:
@@ -1035,13 +1046,21 @@ int main(int argc, char *argv[])
 
 	/* Close any open file descriptors we may have inherited from our
 	 * parent caller.  This excludes the first three.  We don't close
-	 * stdin, stdout or stdio. Note, this has to be done before we
-	 * open any other file descriptors, but after we check for a file
-	 * containing authentication in /tmp.
+	 * STDIN_FILENO, STDOUT_FILENO or STDERR_FILENO. Note, this has to
+	 * be done before we open any other file descriptors, but after we
+	 * check for a file containing authentication in /tmp.
 	 */
-	for (i = 3; i < rlp.rlim_cur; ++i)
+	for (i = 0; i < rlp.rlim_cur; ++i)
 	{
-		(void)close(i);
+		switch (i)
+		{
+		case STDIN_FILENO:
+		case STDOUT_FILENO:
+		case STDERR_FILENO:
+			break;
+		default:
+			(void)close(i);
+		}
 	}
 
 	/* raise the maximum number of open files for this process if needed */
@@ -1136,6 +1155,14 @@ int main(int argc, char *argv[])
 	{
 		slash = strchr(colon, '/');
 	}
+
+	/* Create a mntfromname from the uri. Make sure the string is no longer than MNAMELEN */
+	/* this needs to be done while the uri is still percent-encoded */
+	strncpy(mntfromname, uri, MNAMELEN);
+	mntfromname[MNAMELEN] = '\0';
+	
+	/* percent decode the path of the uri */
+	percent_decode_in_place(slash);
 	strcpy(dest_path, slash);
 
 	/* Set global signal handling to protect us from SIGPIPE */
@@ -1150,10 +1177,6 @@ int main(int argc, char *argv[])
 	{
 		exit(rc);
 	}
-	
-	/* Create a mntfromname from the uri. Make sure the string is no longer than MNAMELEN */
-	strncpy(mntfromname, uri, MNAMELEN);
-	mntfromname[MNAMELEN] = '\0';
 	
 	/* if this is going to be a volume on the desktop (the MNT_DONTBROWSE is not set)
 	 * then check to see if this mntfromname is already used by a mount point by the
@@ -1191,7 +1214,7 @@ int main(int argc, char *argv[])
 	/*
 	 * Check out the server and get the mount flags
 	 */
-	error = webdav_mount(proxy_ok, uri, &mysocket, &servermntflags);
+	error = webdav_mount(uri, &servermntflags, proxy_ok, &mysocket);
 	/* if a socket was opened, close it */
 	if (mysocket >= 0)
 	{
@@ -1219,41 +1242,68 @@ int main(int argc, char *argv[])
 	/*
 	 * Construct the listening socket
 	 */
-	un.sun_family = AF_UNIX;
-	if (sizeof(_PATH_TMPWEBDAV) >= sizeof(un.sun_path))
-	{
-		syslog(LOG_ERR, "main: webdav socket name too long");
-		exit(EINVAL);
-	}
-	strcpy(un.sun_path, _PATH_TMPWEBDAV);
-	mktemp(un.sun_path);
-	un.sun_len = strlen(un.sun_path);
-
-	so = socket(AF_UNIX, SOCK_STREAM, 0);
+	so = socket(PF_LOCAL, SOCK_STREAM, 0);
 	if (so < 0)
 	{
 		syslog(LOG_ERR, "main: socket() for kext communication: %s", strerror(errno));
 		exit(errno);
 	}
 
-	um = umask(077);
-	(void)unlink(un.sun_path);
-	if (bind(so, (struct sockaddr *) & un, sizeof(un)) < 0)
+	bzero(&un, sizeof(un));
+	un.sun_len = sizeof(un);
+	un.sun_family = AF_LOCAL;
+	if (sizeof(_PATH_TMPWEBDAVUDS)  >= sizeof(un.sun_path))
+	{
+		syslog(LOG_ERR, "main: webdav socket name too long");
+		exit(EINVAL);
+	}
+	strcpy(un.sun_path, _PATH_TMPWEBDAVUDS);
+	if ( mktemp(un.sun_path) == NULL )
+	{
+		syslog(LOG_ERR, "main: mktemp() kext communication: %s", strerror(errno));
+		exit(EINVAL);
+	}
+
+	/* bind socket with write-only access which is all that's needed for the kext to connect */
+	um = umask(0555);
+	if (bind(so, (struct sockaddr *)&un, sizeof(un)) < 0)
 	{
 		syslog(LOG_ERR, "main: bind() for kext communication: %s", strerror(errno));
 		exit(errno);
 	}
-
-	(void)unlink(un.sun_path);
 	(void)umask(um);
 
-	(void)listen(so, 5);
+	(void)listen(so, 5);	/* XXX is 5 enough? */
 
-	args.pa_socket = so;
-	args.pa_config = mntfromname;
-	args.pa_uri = uri;
-	args.pa_suppressAllUI = gSuppressAllUI;
-
+	args.pa_version = 1;
+	args.pa_mntfromname = mntfromname;
+	args.pa_socket_namelen = sizeof(un);
+	args.pa_socket_name = (struct sockaddr *)&un;
+	if ( *gVolumeName == '\0' )
+	{
+		/* the volume name wasn't passed on the command line so use the
+		 * last path segment of gmountpt
+		 */
+		strcpy(gVolumeName, strrchr(gmountpt, '/') + 1);
+	}
+	args.pa_vol_name = gVolumeName;
+	args.pa_flags = 0;
+	if ( gSuppressAllUI )
+	{
+		args.pa_flags |= WEBDAV_SUPPRESSALLUI;
+	}
+	args.pa_root_obj_ref = (object_ref)&gfilerec;
+	args.pa_root_fileid = WEBDAV_ROOTFILEID;
+	args.pa_dir_size = WEBDAV_DIR_SIZE;
+	args.pa_lookup_timeout = 2; // еееее this should be the constant of the minimum memcache timeout
+	/* pathconf values: >=0 to return value; -1 if not supported */
+	args.pa_link_max = 1;			/* 1 for file systems that do not support link counts */
+	args.pa_name_max = NAME_MAX;	/* The maximum number of bytes in a file name */
+	args.pa_path_max = PATH_MAX;	/* The maximum number of bytes in a pathname */
+	args.pa_pipe_buf = -1;			/* no support for pipes */
+	args.pa_chown_restricted = _POSIX_CHOWN_RESTRICTED; /* appropriate privileges are required for the chown(2) */
+	args.pa_no_trunc = _POSIX_NO_TRUNC; /* file names longer than KERN_NAME_MAX are truncated */
+	
 	error = getvfsbyname("webdav", &vfc);
 	if (error)
 	{
@@ -1262,12 +1312,21 @@ int main(int argc, char *argv[])
 		{
 			error = getvfsbyname("webdav", &vfc);
 		}
+		else
+		{
+			syslog(LOG_ERR, "main: attempt_webdav_load(): %s", strerror(errno));
+			_exit(errno);
+		}
 	}
 
 	if (error)
 	{
 		syslog(LOG_ERR, "main: getvfsbyname(): %s", strerror(errno));
 		exit(errno);
+	}
+	else
+	{
+		gvfc_typenum = vfc.vfc_typenum;
 	}
 
 	/*
@@ -1322,20 +1381,9 @@ int main(int argc, char *argv[])
 	 */
 	daemon(0, webdavfs_debug);
 	
-	/* Connect to the AutoDiskMount server after daemonizing so we
-	 * don't lose our connection to the diskArbitrationPort
-	 */
-	daconnect_status = DiskArbStart(&diskArbitrationPort);
-	diskarb_inited = (daconnect_status == KERN_SUCCESS);
-	if (!diskarb_inited)
-	{
-		syslog(LOG_ERR, "main: DiskArbStart(): %s", strerror(daconnect_status));
-	}
-
 	/* Until pthread can handle locks across deamonization
 	 * we need to delay mutex initialization to here.
 	 */
-
 
 	/* set up the lock on the file arrary and socket */
 	error = pthread_mutexattr_init(&mutexattr);
@@ -1508,7 +1556,15 @@ int main(int argc, char *argv[])
 				}
 				else
 				{
-					syslog(LOG_ERR, "force unmounting %s", gmountpt);
+					if ( message == -2 )
+					{
+						/* this is the normal way out of the select loop */
+						break;
+					}
+					else
+					{
+						syslog(LOG_ERR, "force unmounting %s", gmountpt);
+					}
 				}
 				
 				/* start up a new thread to call webdav_force_unmount() */
@@ -1542,16 +1598,7 @@ int main(int argc, char *argv[])
 			so2 = accept(so, (struct sockaddr *) & un2, &len2);
 			if (so2 < 0)
 			{
-				/*
-				 * The webdav_unmount (in webdav_vfsops.c) calls soshutdown()
-				 * on the socket which generates ECONNABORTED on the accept.
-				 */
-				if ( errno == ECONNABORTED )
-				{
-					/* this is the normal way out of the select loop */
-					break;
-				}
-				else if (errno != EINTR)
+				if (errno != EINTR)
 				{
 					syslog(LOG_ERR, "main: accept(): %s", strerror(errno));
 					exit(errno);
@@ -1575,18 +1622,13 @@ int main(int argc, char *argv[])
 
 	syslog(LOG_INFO, "%s unmounted", gmountpt);
 	
-	/* attempt to delete the cache directory if any */
+	/* attempt to delete the cache directory (if any) and the bound socket name */
 	if (*webdavcache_path != '\0')
 	{
 		(void) rmdir(webdavcache_path);
 	}
+	(void) unlink(un.sun_path);
 
-	if (diskarb_inited)
-	{
-		/* Tell AutoDiskMount to send notifications if it needs to */
-		(void) DiskArbRefresh_auto();
-	}
-        
 	exit(EXIT_SUCCESS);
 }
 

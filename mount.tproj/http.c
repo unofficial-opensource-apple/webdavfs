@@ -29,7 +29,9 @@
  */
 
 #include <sys/types.h>
-#include <sys/vnode.h>
+#include <sys/uio.h>
+
+#include <netinet/in.h>
 
 #include <ctype.h>
 #include <err.h>
@@ -39,23 +41,11 @@
 #include <string.h>
 #include <fcntl.h>
 #include <time.h>
-#include <unistd.h>
+//#include <unistd.h>
 
-#include <sys/param.h>		/* for MAXHOSTNAMELEN */
-#include <sys/queue.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/mount.h>
-#include <sys/sysctl.h>
-#include <sys/uio.h>
-#include <sys/mman.h>
-#include <sys/time.h>
 #include <sys/syslog.h>
 
-#include <netinet/in.h>
-#include <arpa/inet.h>
 
-#include "fetch.h"
 #include "http.h"
 #include "pathnames.h"
 #include "webdavd.h"
@@ -821,23 +811,9 @@ got100reply:
 		}
 		else
 		{
-			/* The line could not be parsed, or it was HTTP 0.9. Retry once after reconnecting. */
-			if (!reconnected)
-			{
-				if (http_socket_reconnect(fs->fs_socketptr, fs->fs_use_connect, 1))
-				{
-					/* the server cannot be reached */
-					myreturn = ENXIO;
-					goto out;
-				}
-				reconnected = 1;
-				goto reconnect;
-			}
-			else
-			{
-				myreturn = EIO;
-				goto out;
-			}
+			/* it was HTTP .9 */
+			myreturn = EIO;
+			goto out;
 		}
 	}
 	continue_received = 0;
@@ -2245,7 +2221,7 @@ retry:
 	{
 
 		case EAGAIN:
-#if (defined(DEBUG) || defined(WEBDAV_TRACE) || defined(WEBDAV_ERROR))
+#ifdef DEBUG
 			fprintf(stderr, "http_get_body: Got error %d from parse response header\n", myreturn);
 #endif
 			if (!reconnected)
@@ -2600,8 +2576,7 @@ got100reply:
 		else
 		{
 			/* it was HTTP .9 */
-			/* The line could not be parsed, or it was HTTP 0.9. Retry once after reconnecting. */
-			myreturn = EAGAIN;
+			myreturn = EIO;
 			goto out;
 		}
 	}
@@ -3041,7 +3016,7 @@ int http_stat(struct fetch_state *fs, void *statstruct)
 {
 	struct iovec iov[NIOV];
 	struct http_state *https = fs->fs_proto;
-	struct vattr *statbuf = ((struct webdav_stat_struct *)statstruct)->statbuf;
+	struct stat *statbuf = ((struct webdav_stat_struct *)statstruct)->statbuf;
 	uid_t uid = ((struct webdav_stat_struct *)statstruct)->uid;
 	char *xml_addr;								/* memory address of xml data (mapped in) */
 	off_t xml_length;							/* length of the xml string */
@@ -3159,7 +3134,8 @@ retry:
 
 	/* parse it to get the info */
 	error = parse_stat((char *)xml_addr, (int)xml_length,
-		((struct webdav_stat_struct *)statstruct)->orig_uri, statbuf, uid);
+		((struct webdav_stat_struct *)statstruct)->orig_uri, statbuf, uid,
+		((struct webdav_stat_struct *)statstruct)->add_cache);
 	
 	/* fall through */
 
@@ -4234,145 +4210,6 @@ done:
 
 /*****************************************************************************/
 
-/* http lookup */
-int http_lookup(struct fetch_state *fs, void *a_file_type)
-{
-	struct iovec iov[NIOV];
-	struct http_state *https = fs->fs_proto;
-	char *http_auth = NULL;
-	char *xml_addr = 0;							/* memory address of xml data (mapped in) */
-	off_t xml_length;							/* length of the xml string */
-	int size_index, n;
-	int error = 0;
-	off_t xml_size;
-	char lengthline[MAX_HTTP_LINELEN];
-	unsigned long cache_generation;
-	AuthFlagsType authflags;
-
-retry:
-
-	n = 0;
-	xml_size = 0;
-
-	if (http_auth)
-	{
-		free(http_auth);
-	}
-	http_auth = NULL;
-	{
-		WebdavAuthcacheRetrieveRec http_auth_struct =
-		{
-			fs->fs_uid, https->http_remote_request, append_to_file, "PROPFIND", NULL, 0, 0
-		};
-		if (!webdav_authcache_retrieve(&http_auth_struct))
-		{
-			cache_generation = http_auth_struct.generation;
-			authflags = http_auth_struct.authflags;
-			http_auth = http_auth_struct.authorization;
-		}
-		else
-		{
-			cache_generation = 0;
-			authflags = kAuthNone;
-		}
-	}
-
-	addstr(iov, n, "PROPFIND ");
-	addstr(iov, n, https->http_remote_request);
-	if (append_to_file)
-	{
-		addstr(iov, n, append_to_file);
-	}
-	addstr(iov, n, " HTTP/1.1\r\n");
-	addstr(iov, n, gUserAgentHeader);
-
-	/* do content negotiation here */
-	addstr(iov, n, "Accept: */*\r\n");
-	addstr(iov, n, https->http_host_header);
-	addstr(iov, n, "Content-Type: text/xml\r\n");
-	addstr(iov, n, "Depth: 0\r\n");
-
-	size_index = n;
-	++n;
-
-	if (http_auth)
-	{
-		addstr(iov, n, http_auth);
-	}
-
-	addstr(iov, n, "\r\n");
-	
-	addstr(iov, n, "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n");
-	xml_size += iov[n - 1].iov_len;
-	addstr(iov, n, "<D:propfind xmlns:D=\"DAV:\">\n");
-	xml_size += iov[n - 1].iov_len;
-	addstr(iov, n, "<D:prop>\n");
-	xml_size += iov[n - 1].iov_len;
-	addstr(iov, n, "<D:resourcetype/>\n");
-	xml_size += iov[n - 1].iov_len;
-	addstr(iov, n, "</D:prop>\n");
-	xml_size += iov[n - 1].iov_len;
-	addstr(iov, n, "</D:propfind>\n");
-	xml_size += iov[n - 1].iov_len;
-	addstr(iov, n, "\r\n");
-	xml_size += iov[n - 1].iov_len;
-	snprintf(lengthline, MAX_HTTP_LINELEN, "Content-Length: %qd\r\n", xml_size);
-	iov[size_index].iov_base = lengthline;
-	iov[size_index].iov_len = strlen(lengthline);
-
-	if (n >= NIOV)
-	{
-		syslog(LOG_ERR, "http_lookup: n >= NIOV");
-		error = EIO;
-		goto out;
-	}
-
-	error = http_get_body(fs, iov, n, &xml_length, &xml_addr, cache_generation, authflags);
-	if (error)
-	{
-		if (error == EAUTH)
-		{
-			goto retry;
-		}
-		else
-		{
-			goto out;
-		}
-	}
-	else
-	{
-		if ( authflags & (kAuthAddToKeychain | kAuthProvisional) )
-		{
-			WebdavAuthcacheKeychainRec keychain_struct =
-			{
-				fs->fs_uid, https->http_remote_request, cache_generation
-			};
-			(void) webdav_authcache_keychain(&keychain_struct);
-		}
-	}
-
-	/* parse it to get the filetype */
-	error = parse_lookup(xml_addr, (int)xml_length, a_file_type);
-	
-	/* fall through */
-
-out:
-
-	if (http_auth)
-	{
-		free(http_auth);
-	}
-
-	if (xml_addr)
-	{
-		free(xml_addr);
-	}
-
-	return (error);
-}
-
-/*****************************************************************************/
-
 /*
  * refresh the children of a directory (collection) on the web and cache
  * them in a local file for readdir to scan later.	This will make
@@ -4927,7 +4764,7 @@ reconnect:
 
 	if (myreturn == EAGAIN)
 	{
-#if (defined(DEBUG) || defined(WEBDAV_TRACE) || defined(WEBDAV_ERROR))
+#ifdef DEBUG
 		fprintf(stderr, "http_put: Got error %d from parse response header\n", myreturn);
 #endif
 
@@ -5252,7 +5089,7 @@ out:
  * Where {WS} represents whitespace (spaces and/or tabs) and 999
  * is a machine-interprable result code.  We return the integer value
  * of that result code, or the impossible value `0' if we are unable to
- * parse the result. If -1 was returned, the line could not be parsed at all.
+ * parse the result.
  */
 static int http_first_line(char *linebuf, int *isHTTP1_0, int continue_received)
 {

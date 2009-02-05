@@ -48,12 +48,44 @@
 #include <sys/param.h>
 #include <sys/stat.h>
 #include <sys/syslog.h>
+#include <sys/sysctl.h>
 
 #include "fetch.h"
 #include "http.h"
 #include "pathnames.h"
 #include "webdavd.h"
-#include "../webdav_fs.kextproj/webdav_fs.kmodproj/vnops.h"
+
+/*****************************************************************************/
+
+/* еееее Temporary routines */
+
+/*
+ * Given a object_ref to a directory and a name, create a key URL.
+ * key should be defined as:
+ *		char key[MAXPATHLEN + 1];
+ */
+static int key_from_ref_name(object_ref dir, size_t name_length, char *name, char *key)
+{
+	size_t length;
+	
+	/* еееее Get the URL since that's the key to the old caches */
+	if ( dir != 0 && name != NULL && key != NULL)
+	{
+		strcpy(key, ((webdav_file_record_t *)dir)->uri);
+		length = strlen(key);
+		if ( (length != 0) && (key[length - 1] != '/') )
+		{
+			strcat(key, "/");
+		}
+		strncat(key, name, name_length);
+		return ( 0 );
+	}
+	else
+	{
+		syslog(LOG_ERR, "key_from_ref_name: dir = %ld, name = %ld, key = %ld", dir, name, key);
+		return (EIO);
+	}
+}
 
 /*****************************************************************************/
 
@@ -71,20 +103,18 @@ int webdav_cachefile_init(void)
 				
 	/* set up the lock on the queues */
 	error = pthread_mutexattr_init(&mutexattr);
-	if (error)
+	if ( !error)
+	{
+		error = pthread_mutex_init(&webdav_cachefile_lock, &mutexattr);
+		if (error)
+		{
+			syslog(LOG_ERR, "webdav_cachefiles_init: pthread_mutex_init() failed: %s", strerror(error));
+		}
+	}
+	else
 	{
 		syslog(LOG_ERR, "webdav_cachefiles_init: pthread_mutexattr_init() failed: %s", strerror(error));
-		goto done;
 	}
-
-	error = pthread_mutex_init(&webdav_cachefile_lock, &mutexattr);
-	if (error)
-	{
-		syslog(LOG_ERR, "webdav_cachefiles_init: pthread_mutex_init() failed: %s", strerror(error));
-		goto done;
-	}
-	
-done:
 	
 	return ( error );
 }
@@ -104,84 +134,83 @@ static int get_cachefile(int *fd)
 	error = 0;
 	
 	mutexerror = pthread_mutex_lock(&webdav_cachefile_lock);
-	if (mutexerror)
+	if ( !mutexerror )
 	{
-		syslog(LOG_ERR, "get_cachefile: pthread_mutex_lock(): %s", strerror(mutexerror));
-		goto die;
-	}
-	
-	/* did a previous call leave a cache file for us to use? */
-	if ( webdav_cachefile < 0 )
-	{
-		/* no, so create a temp file */
-		retrycount = 0;
-		/* don't get stuck here forever */
-		while ( retrycount < 5 )
+		/* did a previous call leave a cache file for us to use? */
+		if ( webdav_cachefile < 0 )
 		{
-			++retrycount;
-			error = 0;
-			if (*webdavcache_path == '\0')
+			/* no, so create a temp file */
+			retrycount = 0;
+			/* don't get stuck here forever */
+			while ( retrycount < 5 )
 			{
-				/* create a template with our pid */
-				sprintf(webdavcache_path, "%s.%lu.XXXXXX", _PATH_TMPWEBDAVDIR, (unsigned long)getpid());
-				
-				/* create the cache directory */
-				if ( mkdtemp(webdavcache_path) == NULL )
+				++retrycount;
+				error = 0;
+				if ( *webdavcache_path == '\0' )
 				{
-					error = errno;
-					syslog(LOG_ERR, "get_cachefile: mkdtemp(): %s", strerror(error));
-					break;	/* break with error */
+					/* create a template with our pid */
+					sprintf(webdavcache_path, "%s.%lu.XXXXXX", _PATH_TMPWEBDAVDIR, (unsigned long)getpid());
+					
+					/* create the cache directory */
+					if ( mkdtemp(webdavcache_path) == NULL )
+					{
+						error = errno;
+						syslog(LOG_ERR, "get_cachefile: mkdtemp(): %s", strerror(error));
+						break;	/* break with error */
+					}
 				}
-			}
-			
-			/* create a template for the cache file */
-			sprintf(pathbuf, "%s/%s", webdavcache_path, _WEBDAVCACHEFILE);
-			
-			/* crate and open the cache file */
-			*fd = mkstemp(pathbuf);
-			if ( *fd != -1 )
-			{
-				/* unlink it so the last close will delete it */
-				(void)unlink(pathbuf);
-				break;	/* break with success */
-			}
-			else
-			{
-				error = errno;
-				if ( ENOENT == error )
+				
+				/* create a template for the cache file */
+				sprintf(pathbuf, "%s/%s", webdavcache_path, _WEBDAVCACHEFILE);
+				
+				/* crate and open the cache file */
+				*fd = mkstemp(pathbuf);
+				if ( *fd != -1 )
 				{
-					/* the webdavcache_path directory is missing, clear the old one and try again */
-					*webdavcache_path = '\0';
-					continue;
+					/* unlink it so the last close will delete it */
+					(void)unlink(pathbuf);
+					break;	/* break with success */
 				}
 				else
 				{
-					syslog(LOG_ERR, "get_cachefile: mkstemp(): %s", strerror(error));
-					break;	/* break with error */
+					error = errno;
+					if ( ENOENT == error )
+					{
+						/* the webdavcache_path directory is missing, clear the old one and try again */
+						*webdavcache_path = '\0';
+						continue;
+					}
+					else
+					{
+						syslog(LOG_ERR, "get_cachefile: mkstemp(): %s", strerror(error));
+						break;	/* break with error */
+					}
 				}
 			}
+		}
+		else
+		{
+			/* yes, so grab it */
+			*fd = webdav_cachefile;
+			webdav_cachefile = -1;
+		}
+		
+		mutexerror = pthread_mutex_unlock(&webdav_cachefile_lock);
+		if (mutexerror)
+		{
+			error = mutexerror;
+			syslog(LOG_ERR, "get_cachefile: pthread_mutex_unlock(): %s", strerror(mutexerror));
+			webdav_kill(-1);	/* tell the main select loop to force unmount */
 		}
 	}
 	else
 	{
-		/* yes, so grab it */
-		*fd = webdav_cachefile;
-		webdav_cachefile = -1;
+		error = mutexerror;
+		syslog(LOG_ERR, "get_cachefile: pthread_mutex_lock(): %s", strerror(mutexerror));
+		webdav_kill(-1);	/* tell the main select loop to force unmount */
 	}
 	
-	mutexerror = pthread_mutex_unlock(&webdav_cachefile_lock);
-	if (mutexerror)
-	{
-		syslog(LOG_ERR, "get_cachefile: pthread_mutex_unlock(): %s", strerror(mutexerror));
-		goto die;
-	}
-	
-	return (error);
-	
-die:
-
-	webdav_kill(-1);	/* tell the main select loop to force unmount */
-	return ( mutexerror );
+	return ( error );
 }
 
 /*****************************************************************************/
@@ -196,37 +225,32 @@ static void save_cachefile(int fd)
 	int mutexerror;
 	
 	mutexerror = pthread_mutex_lock(&webdav_cachefile_lock);
-	if (mutexerror)
+	if ( !mutexerror )
 	{
-		syslog(LOG_ERR, "save_cachefile: pthread_mutex_lock(): %s", strerror(mutexerror));
-		goto die;
-	}
-	
-	/* are we already storing a cache file that wasn't used? */
-	if ( webdav_cachefile < 0 )
-	{
-		/* no, so store this one */
-		webdav_cachefile = fd;
+		/* are we already storing a cache file that wasn't used? */
+		if ( webdav_cachefile < 0 )
+		{
+			/* no, so store this one */
+			webdav_cachefile = fd;
+		}
+		else
+		{
+			/* yes, so close this one */
+			close(fd);
+		}
+
+		mutexerror = pthread_mutex_unlock(&webdav_cachefile_lock);
+		if ( mutexerror )
+		{
+			syslog(LOG_ERR, "save_cachefile: pthread_mutex_unlock(): %s", strerror(mutexerror));
+			webdav_kill(-1);	/* tell the main select loop to force unmount */
+		}
 	}
 	else
 	{
-		/* yes, so close this one */
-		close(fd);
+		syslog(LOG_ERR, "save_cachefile: pthread_mutex_lock(): %s", strerror(mutexerror));
+		webdav_kill(-1);	/* tell the main select loop to force unmount */
 	}
-
-	mutexerror = pthread_mutex_unlock(&webdav_cachefile_lock);
-	if (mutexerror)
-	{
-		syslog(LOG_ERR, "save_cachefile: pthread_mutex_unlock(): %s", strerror(mutexerror));
-		goto die;
-	}
-	
-	return;
-	
-die:
-
-	webdav_kill(-1);	/* tell the main select loop to force unmount */
-	return;
 }
 
 /*****************************************************************************/
@@ -235,17 +259,18 @@ static
 int getfrommemcache(char *key, struct fetch_state *volatile fs,
 	struct file_array_element *file_array_elem)
 {
-	struct vattr statbuf;
+	struct stat statbuf;
 	char appledoubleheader[APPLEDOUBLEHEADER_LENGTH];
 	ssize_t size;
 	int32_t lastvalidtime;
+	int result;
 	
 	if ( webdav_memcache_retrieve(fs->fs_uid, key,
-		&gmemcache_header, &statbuf, appledoubleheader, &lastvalidtime) )
+			&gmemcache_header, &statbuf, appledoubleheader, &lastvalidtime) )
 	{
 		/* we found the AppleDouble header in memcache */
 		size = write(file_array_elem->fd, (void *)&appledoubleheader, APPLEDOUBLEHEADER_LENGTH);
-		if (size != APPLEDOUBLEHEADER_LENGTH)
+		if ( size != APPLEDOUBLEHEADER_LENGTH )
 		{
 			if (size == -1)
 			{
@@ -257,35 +282,52 @@ int getfrommemcache(char *key, struct fetch_state *volatile fs,
 			}
 			/* seek back to start of file */
 			(void) lseek(file_array_elem->fd, (off_t)0, SEEK_SET);
-			return FALSE;
+			result = FALSE;
 		}
 		else
 		{
 			file_array_elem->download_status = WEBDAV_DOWNLOAD_FINISHED;
 			file_array_elem->lastvalidtime = lastvalidtime;
-			return TRUE;
+			result = TRUE;
 		}
 	}
 	else
 	{
-		return FALSE;
+		result = FALSE;
 	}
+	
+	return ( result );
 }
-
 
 /*****************************************************************************/
 
-int webdav_open(proxy_ok, pcr, key, a_socket, so, fdp, file_type, a_file_handle)
-	int proxy_ok;
-	struct webdav_cred *pcr;
-	char *key;
-	int *a_socket;
-	int so;
-	int *fdp;
-	webdav_filetype_t file_type;
-	webdav_filehandle_t *a_file_handle;
+static int associate_cachefile(struct webdavcachefileref *cachefileref)
 {
-	#pragma unused(so)
+	int error = 0;
+	int mib[5];
+	
+	/* setup mib for the request */
+	mib[0] = CTL_VFS;
+	mib[1] = gvfc_typenum;
+	mib[2] = WEBDAV_ASSOCIATECACHEFILE_SYSCTL;
+	mib[3] = cachefileref->ref;
+	mib[4] = cachefileref->fd;
+	
+	if ( sysctl(mib, 5, NULL, NULL, NULL, 0) < 0 )
+	{
+		error = errno;
+		syslog(LOG_ERR, "associate_cachefile: sysctl(): %d: %s", error, strerror(error));
+	}
+
+	return ( error );
+}
+
+/*****************************************************************************/
+
+int webdav_open(struct webdav_request_open *request_open,
+		struct webdav_reply_open *reply_open,
+		int proxy_ok, int *a_socket)
+{
 	char *utf8_key;
 	struct webdav_lock_struct lock_struct;
 	int error, error2;
@@ -294,10 +336,30 @@ int webdav_open(proxy_ok, pcr, key, a_socket, so, fdp, file_type, a_file_handle)
 	struct timeval tv;
 	struct timezone tz;
 	int theCacheFile;
+	webdav_filetype_t file_type;
+	struct webdavcachefileref cachefileref;
+	char *key;
 
+	reply_open->pid = 0;
+	
 	lock_struct.refresh = 0;
 	lock_struct.locktoken = NULL;
+	
+	/* extract the file_type, ref and ref_validator from the key */
+	file_type = request_open->obj_type;
+	cachefileref.ref = request_open->ref;
 
+	/* еееее Get the URL since that's the key to the old caches */
+	if ( request_open->obj_ref != 0 )
+	{
+		key = ((webdav_file_record_t *)request_open->obj_ref)->uri;
+	}
+	else
+	{
+		syslog(LOG_ERR, "webdav_open: request_open->obj_ref is zero");
+		return (EIO);
+	}
+	
 	utf8_key = utf8_encode((const unsigned char *)key);
 	if (!utf8_key)
 	{
@@ -312,7 +374,7 @@ int webdav_open(proxy_ok, pcr, key, a_socket, so, fdp, file_type, a_file_handle)
 	bzero(&fs, sizeof(fs));
 	fs.fs_use_connect = 1;
 	fs.fs_socketptr = a_socket;
-	fs.fs_uid = pcr->pcr_uid;
+	fs.fs_uid = request_open->pcr.pcr_uid;
 
 	error = http_parse(&fs, utf8_key, proxy_ok);
 	if (error)
@@ -419,8 +481,8 @@ int webdav_open(proxy_ok, pcr, key, a_socket, so, fdp, file_type, a_file_handle)
 	{
 
 #ifdef DEBUG
-		fprintf(stderr, "webdav_open: path = %s, uid = %d, gid = %d, fflag = %x, oflag = %x\n",
-			fs.fs_outputfile, pcr->pcr_uid, pcr->pcr_groups[0], pcr->pcr_flag, (pcr->pcr_flag) - 1);
+		fprintf(stderr, "webdav_open: path = %s, uid = %d, gid = %d, flags = %x\n",
+			fs.fs_outputfile, pcr->pcr_uid, pcr->pcr_groups[0], request_open->flags);
 #endif
 
 		/* Find an open array element in our file table and open the file again
@@ -548,7 +610,7 @@ success:
 		gfile_array[arrayelem].lastvalidtime = 0;
 		gfile_array[arrayelem].uri = utf8_key;
 		utf8_key = NULL;
-		gfile_array[arrayelem].uid = pcr->pcr_uid;
+		gfile_array[arrayelem].uid = request_open->pcr.pcr_uid;
 		gfile_array[arrayelem].download_status = 0;
 		gfile_array[arrayelem].deleted = 0;
 		gfile_array[arrayelem].file_type = file_type;
@@ -560,10 +622,8 @@ success:
 	if (file_type == WEBDAV_FILE_TYPE)
 	{
 
-		if ((((pcr->pcr_flag) - 1) & O_WRONLY) || (((pcr->pcr_flag) - 1) & O_RDWR))
+		if ( (request_open->flags & O_WRONLY) || (request_open->flags & O_RDWR) )
 		{
-			/* -1 on pcr_flag converts kernel FFLAGS to OFLAGS, see <fcntl.h> */
-
 			/* If we are opening this file for write access, lock it first,
 			  before we copy it into the cache file from the server, 
 			  or truncate the cache file. */
@@ -580,7 +640,7 @@ success:
 			/* If opened for write and O_TRUNC we can set the length to zero 
 			  and not get it from the server.
 			*/
-			if (((pcr->pcr_flag) - 1) & O_TRUNC)
+			if (request_open->flags & O_TRUNC)
 			{
 				if (ftruncate(gfile_array[arrayelem].fd, 0LL))
 				{
@@ -672,7 +732,7 @@ success:
 
 get_finished:
 		/* Put the file handle in the inode array.	If the entry is not
-		  there, something has gone wrong.	 (We don't cache directories.)
+		  there, something has gone wrong. (We don't cache directories.)
 		*/
 		error = webdav_set_file_handle(key, strlen(key), arrayelem);
 		if (error)
@@ -694,6 +754,11 @@ get_finished:
 
 			gfile_array[arrayelem].download_status = WEBDAV_DOWNLOAD_FINISHED;
 
+			error = webdav_set_file_handle(key, strlen(key), arrayelem);
+			if (error)
+			{
+				goto clear_free_unlock_done;
+			}
 		}
 		else
 		{
@@ -750,7 +815,7 @@ clear_free_unlock_done:
 		if (error == ENOENT)
 		{
 			(void)webdav_remove_inode(key, strlen(key));
-			(void)webdav_memcache_remove(pcr->pcr_uid, key, &gmemcache_header);
+			(void)webdav_memcache_remove(request_open->pcr.pcr_uid, key, &gmemcache_header);
 		}
 
 		/* If there is an error, clean up the file array. */
@@ -761,36 +826,17 @@ free_unlock_done:
 
 	if (error == 0)
 	{
-		/* fdp is only used when error is not set */
-		*fdp = dup(gfile_array[arrayelem].fd);
-		if (*fdp == -1)
+		cachefileref.fd = gfile_array[arrayelem].fd;
+		
+		/* associate the cachefile with the webdav file */
+		error = associate_cachefile(&cachefileref);
+		if ( 0 == error )
 		{
-			/* Clear out all of the cache files that have been closed for a while */
-			gettimeofday(&tv, &tz);
-			for (i = 0; i < WEBDAV_MAX_OPEN_FILES; ++i)
-			{
-				if (gfile_array[i].fd != -1)
-				{
-					DEL_EXPIRED_CACHE(i, tv.tv_sec, WEBDAV_CACHE_LOW_TIMEOUT);
-				}
-			}
-
-			/* Try again */
-			*fdp = dup(gfile_array[arrayelem].fd);
-			if (*fdp == -1)
-			{
-				syslog(LOG_ERR, "webdav_open: dup() #2: %s", strerror(errno));
-				error = errno;
-				CLEAR_GFILE_ENTRY(arrayelem);
-			}
-			else
-			{
-				*a_file_handle = arrayelem;
-			}
+			reply_open->pid = getpid();
 		}
 		else
 		{
-			*a_file_handle = arrayelem;
+			error = errno;
 		}
 	}
 
@@ -812,19 +858,16 @@ free_unlock_done:
 	}
 	
 #ifdef DEBUG
-	fprintf(stderr, "webdav_open returns fd = %d, error = %d, arrayelem = %d\n", *fdp, error,
-		*a_file_handle);
+	fprintf(stderr, "webdav_open returns error = %d, arrayelem = %d\n", error, *a_file_handle);
 #endif
-
+	
 	return (error);
 }
 
 /*****************************************************************************/
 
-int webdav_close(proxy_ok, file_handle, a_socket)
-	int proxy_ok;
-	webdav_filehandle_t file_handle;
-	int *a_socket;
+int webdav_close(struct webdav_request_close *request_close,
+		int proxy_ok, int *a_socket)
 {
 	int newerror, error = 0;
 	struct fetch_state fs;
@@ -832,6 +875,16 @@ int webdav_close(proxy_ok, file_handle, a_socket)
 	struct timeval tv;
 	struct timezone tz;
 	int was_locked;
+	webdav_filehandle_t file_handle;
+
+	/* еееее */
+	if ( request_close->obj_ref == 0 )
+	{
+		syslog(LOG_ERR, "webdav_close: request_close->obj_ref is zero");
+		return (EIO);
+	}
+	
+	file_handle = ((webdav_file_record_t *)request_close->obj_ref)->file_handle;
 
 	error = pthread_mutex_lock(&garray_lock);
 	if (error)
@@ -987,66 +1040,120 @@ done:
 
 /*****************************************************************************/
 
-int webdav_lookupinfo(proxy_ok, pcr, key, a_socket, a_file_type)
-	int proxy_ok;
-	struct webdav_cred *pcr;
-	char *key;
-	int *a_socket;
-	webdav_filetype_t *a_file_type;
+int webdav_lookup(struct webdav_request_lookup *request_lookup, struct webdav_reply_lookup *reply_lookup,
+		int proxy_ok, int *a_socket)
 {
 	char *utf8_key;
 	int error;
 	struct fetch_state fs;
+	struct webdav_stat_struct statstruct;
+	struct stat statbuf;
+	char fullkey[MAXPATHLEN + 1];
+	
+	/* еееее temporary */
+	error = key_from_ref_name(request_lookup->dir, request_lookup->name_length, request_lookup->name, fullkey);
+	if (error)
+	{
+		goto exit;
+	}
 
-	/* What we are starting with is a pathname - the http part
-	  in the key variable.  Someday that may change but this is
-	  still the prototype.  Start by initializing the fs_state
-	  structure							 */
+	/* What we are starting with is a pathname - the http part in the key variable. */
 
 	bzero(&fs, sizeof(fs));
 	fs.fs_use_connect = 1;
 	fs.fs_socketptr = a_socket;
-	utf8_key = utf8_encode((const unsigned char *)key);
+
+	/* ok, now that we have assembled the uri, check the cache to see if
+	  we have this one already we look using the pretranslated uri to
+	  save time */
+
+	if ( webdav_memcache_retrieve(request_lookup->pcr.pcr_uid, fullkey, &gmemcache_header, &statbuf, NULL, NULL) )
+	{
+		error = 0;
+		goto exit;
+	}
+
+	utf8_key = utf8_encode((const unsigned char *)fullkey);
 	if (!utf8_key)
 	{
 		return (ENOMEM);
 	}
 
-	fs.fs_uid = pcr->pcr_uid;
-	
+	fs.fs_uid = request_lookup->pcr.pcr_uid;
+
 	error = http_parse(&fs, utf8_key, proxy_ok);
 	if (error)
 	{
-		goto done;
+		goto cleanup;
 	}
 
-	error = make_request(&fs, http_lookup, (void *)a_file_type, WEBDAV_FS_CLOSE);
-	if (error)
-	{
-		goto done;
-	}
+	/* Set up the stat structure which we will use for the call to http_stat */
 
-done:
+	statstruct.orig_uri = fullkey;
+	statstruct.statbuf = &statbuf;
+	statstruct.uid = request_lookup->pcr.pcr_uid;
+	statstruct.add_cache = TRUE;
+
+	error = make_request(&fs, http_stat, (void *) &statstruct, WEBDAV_FS_CLOSE);
+
+cleanup:
 
 	free(utf8_key);
+
+exit:
+
+	/* fake up st_ino, st_mode, st_atimespec, st_mtimespec, st_ctimespec */
+	if ( 0 == error )
+	{
+		u_int32_t inode;
+		
+		/* get the obj_ref */
+		error = webdav_get_inode(fullkey, strlen(fullkey), FALSE, &inode, &(reply_lookup->obj_ref));
+		if ( (error != 0) || (inode != (u_int32_t)statbuf.st_ino) )
+		{
+			/* еееее race between the caches */
+			bzero(reply_lookup, sizeof(struct webdav_reply_lookup));
+		}
+		else
+		{
+			reply_lookup->obj_fileid = statbuf.st_ino;
+			reply_lookup->obj_type = S_ISREG(statbuf.st_mode) ? WEBDAV_FILE_TYPE : WEBDAV_DIR_TYPE;
+			reply_lookup->obj_atime = statbuf.st_atimespec;
+			reply_lookup->obj_mtime = statbuf.st_mtimespec;
+			reply_lookup->obj_ctime = statbuf.st_ctimespec;
+			reply_lookup->obj_filesize = statbuf.st_size;
+		}
+	}
+	else
+	{
+		bzero(reply_lookup, sizeof(struct webdav_reply_lookup));
+	}
+	
 	return (error);
 }
 
 /*****************************************************************************/
 
-int webdav_stat(proxy_ok, pcr, key, a_socket, so, statbuf)
-	int proxy_ok;
-	struct webdav_cred *pcr;
-	char *key;
-	int *a_socket;
-	int so;
-	struct vattr *statbuf;
+int webdav_getattr(struct webdav_request_getattr *request_getattr, struct webdav_reply_getattr *reply_getattr,
+		int proxy_ok, int *a_socket)
 {
-	#pragma unused(so)
 	char *utf8_key;
 	int error;
 	struct fetch_state fs;
 	struct webdav_stat_struct statstruct;
+	struct stat statbuf;
+	char *key;
+
+	/* еееее Get the URL since that's the key to the old caches */
+	if ( request_getattr->obj_ref != 0 )
+	{
+		key = ((webdav_file_record_t *)request_getattr->obj_ref)->uri;
+	}
+	else
+	{
+		syslog(LOG_ERR, "webdav_getattr: request_getattr->obj_ref is zero");
+		return (EIO);
+	}
 
 	/* What we are starting with is a pathname - the http part
 	  in the key variable.						 */
@@ -1059,9 +1166,10 @@ int webdav_stat(proxy_ok, pcr, key, a_socket, so, statbuf)
 	  we have this one already we look using the pretranslated uri to
 	  save time */
 
-	if ( webdav_memcache_retrieve(pcr->pcr_uid, key, &gmemcache_header, statbuf, NULL, NULL) )
+	if ( webdav_memcache_retrieve(request_getattr->pcr.pcr_uid, key, &gmemcache_header, &statbuf, NULL, NULL) )
 	{
-		return (0);
+		error = 0;
+		goto exit;
 	}
 
 	utf8_key = utf8_encode((const unsigned char *)key);
@@ -1070,7 +1178,7 @@ int webdav_stat(proxy_ok, pcr, key, a_socket, so, statbuf)
 		return (ENOMEM);
 	}
 
-	fs.fs_uid = pcr->pcr_uid;
+	fs.fs_uid = request_getattr->pcr.pcr_uid;
 
 	error = http_parse(&fs, utf8_key, proxy_ok);
 	if (error)
@@ -1081,37 +1189,70 @@ int webdav_stat(proxy_ok, pcr, key, a_socket, so, statbuf)
 	/* Set up the stat structure which we will use for the call to http_stat */
 
 	statstruct.orig_uri = key;
-	statstruct.statbuf = statbuf;
-	statstruct.uid = pcr->pcr_uid;
+	statstruct.statbuf = &statbuf;
+	statstruct.uid = request_getattr->pcr.pcr_uid;
+	statstruct.add_cache = TRUE;
 
 	error = make_request(&fs, http_stat, (void *) &statstruct, WEBDAV_FS_CLOSE);
 
 done:
 
 	free(utf8_key);
+
+exit:
+
+	/* fake up st_ino, st_mode, st_atimespec, st_mtimespec, st_ctimespec */
+	if ( 0 == error )
+	{
+		u_int32_t inode;
+		object_ref obj_ref;
+		
+		error = webdav_get_inode(key, strlen(key), FALSE, &inode, &obj_ref);
+		if ( (error != 0) || (inode != (u_int32_t)statbuf.st_ino) )
+		{
+			/* еееее race between the caches */
+			bzero(reply_getattr, sizeof(struct webdav_reply_getattr));
+		}
+		else
+		{
+			bcopy(&statbuf, &reply_getattr->obj_attr, sizeof(struct stat));
+		}
+	}
+	else
+	{
+		bzero(reply_getattr, sizeof(struct webdav_reply_getattr));
+	}
+
 	return (error);
 }
 
 /*****************************************************************************/
 
-int webdav_statfs(proxy_ok, pcr, key, a_socket, so, statfsbuf)
-	int proxy_ok;
-	struct webdav_cred *pcr;
-	char *key;
-	int *a_socket;
-	int so;
-	struct statfs *statfsbuf;
+int webdav_statfs(struct webdav_request_statfs *request_statfs,
+		struct webdav_reply_statfs *reply_statfs,
+		int proxy_ok, int *a_socket)
 {
-	#pragma unused(so)
 	char *utf8_key;
 	int error;
 	struct fetch_state fs;
 	time_t thetime;
+	char *key;
+
+	/* еееее Get the URL since that's the key to the old caches */
+	if ( request_statfs->root_obj_ref != 0 )
+	{
+		key = ((webdav_file_record_t *)request_statfs->root_obj_ref)->uri;
+	}
+	else
+	{
+		syslog(LOG_ERR, "webdav_statfs: request_statfs->root_obj_ref is zero");
+		return (EIO);
+	}
 	
 	if ( gSuppressAllUI )
 	{
 		/* if we're suppressing UI, we don't need statfs to get quota info from the server */
-		bzero((void *)statfsbuf, sizeof(struct statfs));
+		bzero((void *)&reply_statfs->fs_attr, sizeof(struct statfs));
 		return (0);
 	}
 
@@ -1123,7 +1264,7 @@ int webdav_statfs(proxy_ok, pcr, key, a_socket, so, statfsbuf)
 	{
 		if (gstatfstime && (gstatfstime + WEBDAV_STATFS_TIMEOUT) > thetime)
 		{
-			bcopy(&gstatfsbuf, statfsbuf, sizeof(gstatfsbuf));
+			bcopy(&gstatfsbuf, &reply_statfs->fs_attr, sizeof(struct statfs));
 			return (0);
 		}
 	}
@@ -1142,7 +1283,7 @@ int webdav_statfs(proxy_ok, pcr, key, a_socket, so, statfsbuf)
 		return (ENOMEM);
 	}
 
-	fs.fs_uid = pcr->pcr_uid;
+	fs.fs_uid = request_statfs->pcr.pcr_uid;
 
 	error = http_parse(&fs, utf8_key, proxy_ok);
 	if (error)
@@ -1150,7 +1291,7 @@ int webdav_statfs(proxy_ok, pcr, key, a_socket, so, statfsbuf)
 		goto done;
 	}
 
-	error = make_request(&fs, http_statfs, (void *)statfsbuf, WEBDAV_FS_CLOSE);
+	error = make_request(&fs, http_statfs, (void *)&reply_statfs->fs_attr, WEBDAV_FS_CLOSE);
 	if (error)
 	{
 		goto done;
@@ -1159,7 +1300,7 @@ int webdav_statfs(proxy_ok, pcr, key, a_socket, so, statfsbuf)
 
 done:
 
-	bcopy(statfsbuf, &gstatfsbuf, sizeof(gstatfsbuf));
+	bcopy(&reply_statfs->fs_attr, &gstatfsbuf, sizeof(struct statfs));
 	gstatfstime = thetime;
 	free(utf8_key);
 	return (error);
@@ -1167,18 +1308,15 @@ done:
 
 /*****************************************************************************/
 
-int webdav_mount(proxy_ok, key, a_socket, a_mount_args)
-	int proxy_ok;
-	char *key;
-	int *a_socket;
-	int *a_mount_args;
+int webdav_mount(char *key, int *a_mount_args,
+		int proxy_ok, int *a_socket)
 {
 	char *utf8_key;
 	int error;
 	struct fetch_state fs;
-	webdav_filetype_t file_type;
 	struct webdav_cred cred;
-
+	struct webdav_stat_struct statstruct;
+	struct stat statbuf;
 
 	/* What we are starting with is a pathname - the http part
 	  in the key variable.  Someday that may change but this is
@@ -1197,8 +1335,6 @@ int webdav_mount(proxy_ok, key, a_socket, a_mount_args)
 	}
 
 	/* now set up the cred structure, we will need it later */
-
-	cred.pcr_flag = 0;
 	cred.pcr_uid = getuid();
 	cred.pcr_ngroups = 0;
 
@@ -1218,11 +1354,23 @@ int webdav_mount(proxy_ok, key, a_socket, a_mount_args)
 		goto done;
 	}
 
-	/* Now make sure that this is a directory and that the URI is valid */
-	error = webdav_lookupinfo(proxy_ok, &cred, key, a_socket, &file_type);
+	error = http_parse(&fs, utf8_key, proxy_ok);
 	if (error)
 	{
-		/* This message will be in addition to error message from http_lookup
+		goto done;
+	}
+
+	/* Set up the stat structure which we will use for the call to http_stat */
+	statstruct.orig_uri = key;
+	statstruct.statbuf = &statbuf;
+	statstruct.uid = cred.pcr_uid;
+	statstruct.add_cache = FALSE;
+
+	/* Now make sure that this is a directory and that the URI is valid */
+	error = make_request(&fs, http_stat, (void *)&statstruct, WEBDAV_FS_CLOSE);
+	if (error)
+	{
+		/* This message will be in addition to error message from http_stat
 		 * so that we can tell it happened during the mount.
 		 * EACCES is passed back because it will be translated to ECANCELED in main().
 		 */
@@ -1232,7 +1380,7 @@ int webdav_mount(proxy_ok, key, a_socket, a_mount_args)
 			error = ENOENT;
 		}
 	}
-	else if (file_type != WEBDAV_DIR_TYPE)
+	else if ( !S_ISDIR(statbuf.st_mode) )
 	{
 		/* the PROFIND was successful, but the URL was to a file, not a collection */
 		syslog(LOG_ERR, "webdav_mount: URL is not a collection resource (directory)");
@@ -1247,18 +1395,25 @@ done:
 
 /*****************************************************************************/
 
-int webdav_create(proxy_ok, pcr, key, a_socket, file_type)
-	int proxy_ok;
-	struct webdav_cred *pcr;
-	char *key;
-	int *a_socket;
-	webdav_filetype_t file_type;
+int webdav_create(struct webdav_request_create *request_create, struct webdav_reply_create *reply_create,
+		int proxy_ok, int *a_socket)
 {
 	char *utf8_key;
 	int error;
 	struct fetch_state fs;
-	u_int32_t inode = 0;
 
+	char fullkey[MAXPATHLEN + 1];
+	
+	/* еееее temporary */
+	error = key_from_ref_name(request_create->dir, request_create->name_length, request_create->name, fullkey);
+	if (error)
+	{
+		goto exit;
+	}
+	
+	reply_create->obj_ref = 0;
+	reply_create->obj_fileid = 0;
+	
 	/* What we are starting with is a pathname - the http part
 	  in the key variable.  Someday that may change but this is
 	  still the prototype.  Start by initializing the fs_state
@@ -1268,13 +1423,13 @@ int webdav_create(proxy_ok, pcr, key, a_socket, file_type)
 	fs.fs_use_connect = 1;
 	fs.fs_socketptr = a_socket;
 
-	utf8_key = utf8_encode((const unsigned char *)key);
+	utf8_key = utf8_encode((const unsigned char *)fullkey);
 	if (!utf8_key)
 	{
 		return (ENOMEM);
 	}
 
-	fs.fs_uid = pcr->pcr_uid;
+	fs.fs_uid = request_create->pcr.pcr_uid;
 
 	error = http_parse(&fs, utf8_key, proxy_ok);
 	if (error)
@@ -1282,43 +1437,24 @@ int webdav_create(proxy_ok, pcr, key, a_socket, file_type)
 		goto error;
 	}
 
-	if (file_type == WEBDAV_FILE_TYPE)
+	error = make_request(&fs, http_put, (void *) - 1, WEBDAV_FS_CLOSE);
+	if (error)
 	{
-		error = make_request(&fs, http_put, (void *) - 1, WEBDAV_FS_CLOSE);
-		if (error)
+		/* This message will be in addition to error message from http_put
+		 * so that we can tell it happened during a create.
+		 */
+		if ( error != EPERM )
 		{
-			/* This message will be in addition to error message from http_put
-			 * so that we can tell it happened during a create.
-			 */
-			if ( error != EPERM )
-			{
-				syslog(LOG_ERR, "webdav_create: http_put failed");
-			}
-			goto error;
+			syslog(LOG_ERR, "webdav_create: http_put failed");
 		}
-	}
-	else
-	{
-		if (file_type == WEBDAV_DIR_TYPE)
-		{
-			error = make_request(&fs, http_mkcol, (void *) - 1, WEBDAV_FS_CLOSE);
-			if (error)
-			{
-				goto error;
-			}
-		}
-		else
-		{
-			error = EFTYPE;
-			goto error;
-		}
+		goto error;
 	}
 
 	/* Call webdav_get_inode to generate an inode number for this newly
 	 * created object.	If we don't do this the code which gets file_handles
 	 * will be very upset.	
 	 */
-	error = webdav_get_inode(key, strlen(key), TRUE, &inode);
+	error = webdav_get_inode(fullkey, strlen(fullkey), TRUE, &reply_create->obj_fileid, &reply_create->obj_ref);
 	if (error)
 	{
 		goto error;
@@ -1327,36 +1463,111 @@ int webdav_create(proxy_ok, pcr, key, a_socket, file_type)
 error:
 
 	free(utf8_key);
+
+exit:
+
 	return (error);
 }
 
 /*****************************************************************************/
 
-int webdav_read_bytes(proxy_ok, pcr, key, a_socket, a_byte_addr, a_size)
-	int proxy_ok;
-	struct webdav_cred *pcr;
-	char *key;
-	int *a_socket;
-	char **a_byte_addr;
-	off_t *a_size;
+int webdav_mkdir(struct webdav_request_mkdir *request_mkdir, struct webdav_reply_mkdir *reply_mkdir,
+		int proxy_ok, int *a_socket)
 {
-	char *utf8_uri,  *uri;
+	char *utf8_key;
+	int error;
+	struct fetch_state fs;
+	
+	char fullkey[MAXPATHLEN + 1];
+	
+	/* еееее temporary */
+	error = key_from_ref_name(request_mkdir->dir, request_mkdir->name_length, request_mkdir->name, fullkey);
+	if (error)
+	{
+		goto exit;
+	}
+
+	reply_mkdir->obj_ref = 0;
+	reply_mkdir->obj_fileid = 0;
+	
+	/* What we are starting with is a pathname - the http part
+	  in the key variable.  Someday that may change but this is
+	  still the prototype.  Start by initializing the fs_state
+	  structure							 */
+
+	bzero(&fs, sizeof(fs));
+	fs.fs_use_connect = 1;
+	fs.fs_socketptr = a_socket;
+
+	utf8_key = utf8_encode((const unsigned char *)fullkey);
+	if (!utf8_key)
+	{
+		return (ENOMEM);
+	}
+
+	fs.fs_uid = request_mkdir->pcr.pcr_uid;
+
+	error = http_parse(&fs, utf8_key, proxy_ok);
+	if (error)
+	{
+		goto error;
+	}
+
+	error = make_request(&fs, http_mkcol, (void *) - 1, WEBDAV_FS_CLOSE);
+	if (error)
+	{
+		goto error;
+	}
+
+	/* Call webdav_get_inode to generate an inode number for this newly
+	 * created object.	If we don't do this the code which gets file_handles
+	 * will be very upset.	
+	 */
+	error = webdav_get_inode(fullkey, strlen(fullkey), TRUE, &reply_mkdir->obj_fileid, &reply_mkdir->obj_ref);
+	if (error)
+	{
+		goto error;
+	}
+
+error:
+
+	free(utf8_key);
+
+exit:
+
+	return (error);
+}
+
+/*****************************************************************************/
+
+int webdav_read(struct webdav_request_read *request_read, char **a_byte_addr, size_t *a_size,
+		int proxy_ok, int *a_socket)
+{
+	char *utf8_uri, *uri;
 	int error;
 	struct fetch_state fs;
 	struct http_state *https;
 	struct webdav_read_byte_info byte_info;
 
+	/* еееее Get the URL since that's the key to the old caches */
+	if ( request_read->obj_ref != 0 )
+	{
+		uri = ((webdav_file_record_t *)request_read->obj_ref)->uri;
+	}
+	else
+	{
+		syslog(LOG_ERR, "webdav_read: request_read->obj_ref is zero");
+		return (EIO);
+	}
+
 	/* initialize, in case there's an error */
 	*a_byte_addr = NULL;
 	*a_size = 0;
 
-	/* What we are starting with is a pathname - the http part
-	  in the key variable.  Someday that may change but this is
+	/* What we are starting with is a pathname. Someday that may change but this is
 	  still the prototype.  Start by initializing the fs_state
 	  structure */
-
 	bzero(&fs, sizeof(fs));
-	uri = (char *)(key + sizeof(webdav_byte_read_header_t));
 
 	fs.fs_use_connect = 1;
 	fs.fs_socketptr = a_socket;
@@ -1367,7 +1578,7 @@ int webdav_read_bytes(proxy_ok, pcr, key, a_socket, a_byte_addr, a_size)
 		return (ENOMEM);
 	}
 
-	fs.fs_uid = pcr->pcr_uid;
+	fs.fs_uid = request_read->pcr.pcr_uid;
 
 	error = http_parse(&fs, utf8_uri, proxy_ok);
 	if (error)
@@ -1376,8 +1587,8 @@ int webdav_read_bytes(proxy_ok, pcr, key, a_socket, a_byte_addr, a_size)
 	}
 
 	bzero(&byte_info, sizeof(byte_info));
-	byte_info.num_bytes = ((webdav_byte_read_header_t *)key)->wd_num_bytes;
-	byte_info.byte_start = ((webdav_byte_read_header_t *)key)->wd_byte_start;
+	byte_info.num_bytes = request_read->count;
+	byte_info.byte_start = request_read->offset;
 	byte_info.uri = utf8_uri;
 
 	https = (struct http_state *)fs.fs_proto;
@@ -1402,28 +1613,52 @@ first_free:
 /* XXX The error handling of this function doesn't back out very gracefully
  * and should be fixed when 2770728 is fixed.
  */
-int webdav_rename(proxy_ok, pcr, key, a_socket)
-	int proxy_ok;
-	struct webdav_cred *pcr;
-	char *key;
-	int *a_socket;
+int webdav_rename(struct webdav_request_rename *request_rename,
+		int proxy_ok, int *a_socket)
 {
 	char *f_utf8_key,  *f_key, 					/* original / "from" */
     *t_utf8_key,  *t_key;						/* new / "to" */
 	int error = 0, error2 = 0;
 	int from_gindex = -1, to_gindex = -1;
 	struct fetch_state fs;
-	int length;
 	struct http_state *https;
-	int inode = 0;
+	u_int32_t inode = 0;
+	
+	char fullkey[MAXPATHLEN + 1];
+	
 
+	/* еееее Get the URLs since they are the keys to the old caches */
+	if ( request_rename->from_obj_ref != 0 )
+	{
+		f_key = ((webdav_file_record_t *)request_rename->from_obj_ref)->uri;
+	}
+	else
+	{
+		syslog(LOG_ERR, "webdav_rename: request_rename->from_obj_ref is zero");
+		return (EIO);
+	}
+
+	if ( request_rename->to_obj_ref != 0 )
+	{
+		t_key = ((webdav_file_record_t *)request_rename->to_obj_ref)->uri;
+	}
+	else
+	{
+		/* еееее temporary */
+		error = key_from_ref_name(request_rename->to_dir_ref, request_rename->to_name_length, request_rename->to_name, fullkey);
+		if (error)
+		{
+			goto exit;
+		}
+		t_key = fullkey;
+	}
+	
 	/* What we are starting with is a pathname - the http part
 	  in the key variable.  Someday that may change but this is
 	  still the prototype.  Start by initializing the fs_state
 	  structure */
 
 	bzero(&fs, sizeof(fs));
-	f_key = (char *)(key + sizeof(webdav_rename_header_t));
 
 	fs.fs_use_connect = 1;
 	fs.fs_socketptr = a_socket;
@@ -1434,7 +1669,7 @@ int webdav_rename(proxy_ok, pcr, key, a_socket)
 		return (ENOMEM);
 	}
 
-	fs.fs_uid = pcr->pcr_uid;
+	fs.fs_uid = request_rename->pcr.pcr_uid;
 
 	error = http_parse(&fs, f_utf8_key, proxy_ok);
 	if (error)
@@ -1444,10 +1679,8 @@ int webdav_rename(proxy_ok, pcr, key, a_socket)
 
 	/* Now set up the complete second uri */
 
-	length = ((webdav_rename_header_t *)key)->wd_first_uri_size;
 	https = (struct http_state *)fs.fs_proto;
 
-	t_key = f_key + length;
 	t_utf8_key = utf8_encode((const unsigned char *)t_key);
 	if (!t_utf8_key)
 	{
@@ -1476,7 +1709,10 @@ int webdav_rename(proxy_ok, pcr, key, a_socket)
 		goto done;
 	}
 
-	error = webdav_get_inode(f_key, strlen(f_key), FALSE, &inode);
+	{
+		object_ref  obj_ref;
+		error = webdav_get_inode(f_key, strlen(f_key), FALSE, &inode, &obj_ref);
+	}
 	if (inode && !error)
 	{
 		/* look up the current "from" entry */
@@ -1580,13 +1816,13 @@ int webdav_rename(proxy_ok, pcr, key, a_socket)
 		goto done;
 	}
 
-	error2 = webdav_memcache_remove(pcr->pcr_uid, f_key, &gmemcache_header);
+	error2 = webdav_memcache_remove(request_rename->pcr.pcr_uid, f_key, &gmemcache_header);
 	if (!error)
 	{
 		error = error2;
 	}
 
-	error2 = webdav_memcache_remove(pcr->pcr_uid, t_key, &gmemcache_header);
+	error2 = webdav_memcache_remove(request_rename->pcr.pcr_uid, t_key, &gmemcache_header);
 	if (!error)
 	{
 		error = error2;
@@ -1602,22 +1838,33 @@ done:
 first_free:
 
 	free(f_utf8_key);
+
+exit:
+
 	return (error);
 }
 
 /*****************************************************************************/
 
-int webdav_delete(proxy_ok, pcr, key, a_socket, file_type)
-	int proxy_ok;
-	struct webdav_cred *pcr;
-	char *key;
-	int *a_socket;
-	webdav_filetype_t file_type;
+int webdav_remove(struct webdav_request_remove *request_remove,
+		int proxy_ok, int *a_socket)
 {
 	char *utf8_key;
 	int error = 0, error2 = 0;
 	int arrayelem = -1;
 	struct fetch_state fs;
+	char *key;
+
+	/* еееее Get the URL since that's the key to the old caches */
+	if ( request_remove->obj_ref != 0 )
+	{
+		key = ((webdav_file_record_t *)request_remove->obj_ref)->uri;
+	}
+	else
+	{
+		syslog(LOG_ERR, "webdav_remove: request_remove->obj_ref is zero");
+		return (EIO);
+	}
 
 	/* What we are starting with is a pathname - the http part
 	  in the key variable.  Someday that may change but this is
@@ -1634,7 +1881,7 @@ int webdav_delete(proxy_ok, pcr, key, a_socket, file_type)
 		return (ENOMEM);
 	}
 
-	fs.fs_uid = pcr->pcr_uid;
+	fs.fs_uid = request_remove->pcr.pcr_uid;
 
 	error = http_parse(&fs, utf8_key, proxy_ok);
 	if (error)
@@ -1642,26 +1889,9 @@ int webdav_delete(proxy_ok, pcr, key, a_socket, file_type)
 		goto done;
 	}
 
-	if (file_type == WEBDAV_FILE_TYPE)
+	error = make_request(&fs, http_delete, (void *)0, WEBDAV_FS_CLOSE);
+	if (error)
 	{
-		error = make_request(&fs, http_delete, (void *)0, WEBDAV_FS_CLOSE);
-		if (error)
-		{
-			goto done;
-		}
-	}
-	else if (file_type == WEBDAV_DIR_TYPE)
-	{
-		error = make_request(&fs, http_delete_dir, (void *)0, WEBDAV_FS_CLOSE);
-		if (error)
-		{
-			goto done;
-		}
-	}
-	else
-	{
-		syslog(LOG_ERR, "webdav_delete: file_type is invalid");
-		error = EFTYPE;
 		goto done;
 	}
 
@@ -1675,7 +1905,7 @@ int webdav_delete(proxy_ok, pcr, key, a_socket, file_type)
 	error = pthread_mutex_lock(&garray_lock);
 	if (error)
 	{
-		syslog(LOG_ERR, "webdav_delete: pthread_mutex_lock(): %s", strerror(error));
+		syslog(LOG_ERR, "webdav_remove: pthread_mutex_lock(): %s", strerror(error));
 		webdav_kill(-1);	/* tell the main select loop to force unmount */
 		goto done;
 	}
@@ -1709,12 +1939,12 @@ int webdav_delete(proxy_ok, pcr, key, a_socket, file_type)
 	error = pthread_mutex_unlock(&garray_lock);
 	if (error)
 	{
-		syslog(LOG_ERR, "webdav_delete: pthread_mutex_unlock(): %s", strerror(error));
+		syslog(LOG_ERR, "webdav_remove: pthread_mutex_unlock(): %s", strerror(error));
 		webdav_kill(-1);	/* tell the main select loop to force unmount */
 		goto done;
 	}
 
-	error = webdav_memcache_remove(pcr->pcr_uid, key, &gmemcache_header);
+	error = webdav_memcache_remove(request_remove->pcr.pcr_uid, key, &gmemcache_header);
 
 	if (!error)
 	{
@@ -1731,17 +1961,139 @@ done:
 
 /*****************************************************************************/
 
-int webdav_fsync(proxy_ok, pcr, file_handle, a_socket)
-	int proxy_ok;
-	struct webdav_cred *pcr;
-	webdav_filehandle_t file_handle;
-	int *a_socket;
+int webdav_rmdir(struct webdav_request_rmdir *request_rmdir,
+		int proxy_ok, int *a_socket)
+{
+	char *utf8_key;
+	int error = 0, error2 = 0;
+	int arrayelem = -1;
+	struct fetch_state fs;
+	char *key;
+
+	/* еееее Get the URL since that's the key to the old caches */
+	if ( request_rmdir->obj_ref != 0 )
+	{
+		key = ((webdav_file_record_t *)request_rmdir->obj_ref)->uri;
+	}
+	else
+	{
+		syslog(LOG_ERR, "webdav_rmdir: request_rmdir->obj_ref is zero");
+		return (EIO);
+	}
+
+	/* What we are starting with is a pathname - the http part
+	  in the key variable.  Someday that may change but this is
+	  still the prototype.  Start by initializing the fs_state
+	  structure */
+
+	bzero(&fs, sizeof(fs));
+	fs.fs_use_connect = 1;
+	fs.fs_socketptr = a_socket;
+
+	utf8_key = utf8_encode((const unsigned char *)key);
+	if (!utf8_key)
+	{
+		return (ENOMEM);
+	}
+
+	fs.fs_uid = request_rmdir->pcr.pcr_uid;
+
+	error = http_parse(&fs, utf8_key, proxy_ok);
+	if (error)
+	{
+		goto done;
+	}
+
+	error = make_request(&fs, http_delete_dir, (void *)0, WEBDAV_FS_CLOSE);
+	if (error)
+	{
+		goto done;
+	}
+
+	/* Since we sucessfully deleted this thing, get it out of the cache.
+	  First, get it out of the inode hash. If it is in the inode hash
+	  and the stat cache, the stat cache will prevail and the file will
+	  just look like it hasn't been deleted yet. That's an acceptable
+	  race. */
+
+	/* take the gfile_array lock, to avoid a conflict with webdav_open */
+	error = pthread_mutex_lock(&garray_lock);
+	if (error)
+	{
+		syslog(LOG_ERR, "webdav_rmdir: pthread_mutex_lock(): %s", strerror(error));
+		webdav_kill(-1);	/* tell the main select loop to force unmount */
+		goto done;
+	}
+
+	/* take the entry out of the gfile_array */
+	if (!webdav_get_file_handle(key, strlen(key), &arrayelem))
+	{
+		if ((arrayelem != -1) && (gfile_array[arrayelem].fd != -1) && (!memcmp(utf8_key, gfile_array[arrayelem].uri, strlen(utf8_key))))
+		{
+			if (!gfile_array[arrayelem].cachetime)
+			{
+				/* It's open, so mark it deleted.  The entry will be
+				  cleared when it's closed.  */
+				gfile_array[arrayelem].deleted = 1;
+			}
+			else
+			{
+				CLEAR_GFILE_ENTRY(arrayelem);
+			}
+		}
+	}
+
+	error2 = webdav_remove_inode(key, strlen(key));
+	
+	/* clear out the time so that the next statfs will get the value from
+	 * the server
+	 */
+
+	gstatfstime = 0;
+	
+	error = pthread_mutex_unlock(&garray_lock);
+	if (error)
+	{
+		syslog(LOG_ERR, "webdav_rmdir: pthread_mutex_unlock(): %s", strerror(error));
+		webdav_kill(-1);	/* tell the main select loop to force unmount */
+		goto done;
+	}
+
+	error = webdav_memcache_remove(request_rmdir->pcr.pcr_uid, key, &gmemcache_header);
+
+	if (!error)
+	{
+		error = error2;
+	}
+
+	/* fall through */
+
+done:
+
+	free(utf8_key);
+	return (error);
+}
+
+/*****************************************************************************/
+
+int webdav_fsync(struct webdav_request_fsync *request_fsync,
+		int proxy_ok, int *a_socket)
 {
 	int error, newerror;
 	struct fetch_state fs;
 	struct timeval tv;
 	struct timezone tz;
 	struct webdav_put_struct putinfo;
+	webdav_filehandle_t file_handle;
+
+	/* еееее */
+	if ( request_fsync->obj_ref == 0 )
+	{
+		syslog(LOG_ERR, "webdav_fsync: request_fsync->obj_ref is zero");
+		return (EIO);
+	}
+	
+	file_handle = ((webdav_file_record_t *)request_fsync->obj_ref)->file_handle;
 
 	putinfo.locktoken = NULL;
 	
@@ -1755,9 +2107,7 @@ int webdav_fsync(proxy_ok, pcr, file_handle, a_socket)
 
 	if (gfile_array[file_handle].fd == -1)
 	{
-		/* Trying to close something we did not open
-		 * uh oh
-		 */
+		/* Trying to fsync something that's not open */
 		syslog(LOG_ERR, "webdav_fsync: fd is closed");
 		error = EBADF;
 		goto unlock_finish;
@@ -1766,7 +2116,7 @@ int webdav_fsync(proxy_ok, pcr, file_handle, a_socket)
 	bzero(&fs, sizeof(fs));
 	fs.fs_use_connect = 1;
 	fs.fs_socketptr = a_socket;
-	fs.fs_uid = pcr->pcr_uid;
+	fs.fs_uid = request_fsync->pcr.pcr_uid;
 
 	error = http_parse(&fs, gfile_array[file_handle].uri, proxy_ok);
 	if (error)
@@ -1873,21 +2223,27 @@ done:
 
 /*****************************************************************************/
 
-int webdav_refreshdir(proxy_ok, pcr, file_handle, a_socket, cache_appledoubleheader)
-	int proxy_ok;
-	struct webdav_cred *pcr;
-	webdav_filehandle_t file_handle;
-	int *a_socket;
-	int cache_appledoubleheader;
+int webdav_readdir(struct webdav_request_readdir *request_readdir,
+		int proxy_ok, int *a_socket)
 {
 	int error, newerror;
 	struct fetch_state fs;
 	struct webdav_refreshdir_struct refreshdirstruct;
+	webdav_filehandle_t file_handle;
 
+	/* еееее */
+	if ( request_readdir->obj_ref == 0 )
+	{
+		syslog(LOG_ERR, "webdav_readdir: request_readdir->obj_ref is zero");
+		return (EIO);
+	}
+	
+	file_handle = ((webdav_file_record_t *)request_readdir->obj_ref)->file_handle;
+	
 	error = pthread_mutex_lock(&garray_lock);
 	if (error)
 	{
-		syslog(LOG_ERR, "webdav_refreshdir: pthread_mutex_lock(): %s", strerror(error));
+		syslog(LOG_ERR, "webdav_readdir: pthread_mutex_lock(): %s", strerror(error));
 		webdav_kill(-1);	/* tell the main select loop to force unmount */
 		goto done;
 	}
@@ -1895,7 +2251,7 @@ int webdav_refreshdir(proxy_ok, pcr, file_handle, a_socket, cache_appledoublehea
 	if (gfile_array[file_handle].fd == -1)
 	{
 		/* Trying to refresh something we did not open -- uh oh */
-		syslog(LOG_ERR, "webdav_refreshdir: fd is closed");
+		syslog(LOG_ERR, "webdav_readdir: fd is closed");
 		error = EBADF;
 		goto unlock_finish;
 	}
@@ -1903,7 +2259,7 @@ int webdav_refreshdir(proxy_ok, pcr, file_handle, a_socket, cache_appledoublehea
 	bzero(&fs, sizeof(fs));
 	fs.fs_use_connect = 1;
 	fs.fs_socketptr = a_socket;
-	fs.fs_uid = pcr->pcr_uid;
+	fs.fs_uid = request_readdir->pcr.pcr_uid;
 
 	error = http_parse(&fs, gfile_array[file_handle].uri, proxy_ok);
 	if (error)
@@ -1912,7 +2268,7 @@ int webdav_refreshdir(proxy_ok, pcr, file_handle, a_socket, cache_appledoublehea
 	}
 
 	refreshdirstruct.file_array_elem = &gfile_array[file_handle];
-	refreshdirstruct.cache_appledoubleheader = cache_appledoubleheader;
+	refreshdirstruct.cache_appledoubleheader = request_readdir->cache;
 	error = make_request(&fs, http_refreshdir, (void *) &refreshdirstruct, WEBDAV_FS_CLOSE);
 	if (error)
 	{
@@ -1924,7 +2280,7 @@ unlock_finish:
 	newerror = pthread_mutex_unlock(&garray_lock);
 	if (newerror)
 	{
-		syslog(LOG_ERR, "webdav_refreshdir: pthread_mutex_unlock(): %s", strerror(newerror));
+		syslog(LOG_ERR, "webdav_readdir: pthread_mutex_unlock(): %s", strerror(newerror));
 		webdav_kill(-1);	/* tell the main select loop to force unmount */
 		if (!error)
 		{
@@ -1945,10 +2301,8 @@ done:
  * the pulse thread which is the only caller of this routine
  */
 
-int webdav_lock(proxy_ok, file_array_elem, a_socket)
-	int proxy_ok;
-	struct file_array_element *file_array_elem;
-	int *a_socket;
+int webdav_lock(struct file_array_element *file_array_elem,
+		int proxy_ok, int *a_socket)
 {
 	int error;
 	struct fetch_state fs;
@@ -1976,15 +2330,21 @@ done:
 
 /*****************************************************************************/
 
-int webdav_invalidate_caches(void)
+int webdav_invalidate_caches(struct webdav_request_invalcaches *request_invalcaches)
 {
 	int error, newerror;
 	int index;
 	
+	if ( request_invalcaches->pcr.pcr_uid != process_uid )
+	{
+		error = EPERM;
+		goto done;
+	}
+		
 	error = pthread_mutex_lock(&garray_lock);
 	if (error)
 	{
-		syslog(LOG_ERR, "webdav_refreshdir: pthread_mutex_lock(): %s", strerror(error));
+		syslog(LOG_ERR, "webdav_invalidate_caches: pthread_mutex_lock(): %s", strerror(error));
 		webdav_kill(-1);	/* tell the main select loop to force unmount */
 		goto done;
 	}
@@ -2006,7 +2366,7 @@ int webdav_invalidate_caches(void)
 	newerror = pthread_mutex_unlock(&garray_lock);
 	if (newerror)
 	{
-		syslog(LOG_ERR, "webdav_refreshdir: pthread_mutex_unlock(): %s", strerror(newerror));
+		syslog(LOG_ERR, "webdav_invalidate_caches: pthread_mutex_unlock(): %s", strerror(newerror));
 		webdav_kill(-1);	/* tell the main select loop to force unmount */
 		if (!error)
 		{

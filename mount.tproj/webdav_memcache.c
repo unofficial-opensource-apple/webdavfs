@@ -2,23 +2,24 @@
  * Copyright (c) 1999 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- *
- * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
- * Reserved.  This file contains Original Code and/or Modifications of
- * Original Code as defined in and that are subject to the Apple Public
- * Source License Version 1.0 (the 'License').	You may not use this file
- * except in compliance with the License.  Please obtain a copy of the
- * License at http://www.apple.com/publicsource and read it before using
- * this file.
- *
+ * 
+ * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
+ * 
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
+ * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
- * License for the specific language governing rights and limitations
- * under the License."
- *
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
+ * 
  * @APPLE_LICENSE_HEADER_END@
  */
 /*		@(#)webdav_memcache.c	   *
@@ -45,7 +46,7 @@
 static
 void webdav_free_remaining(webdav_memcache_element_t *current_item);
 static
-int create_webdav_memcache_element(const char *uri, int uri_length, struct vattr *vap,
+int create_webdav_memcache_element(const char *uri, int uri_length, struct stat *statbuf,
 	char *appledoubleheader, time_t now, webdav_memcache_element_t **element);
 
 /*****************************************************************************/
@@ -117,7 +118,7 @@ int webdav_memcache_init(cache_header)
 /*****************************************************************************/
 
 static
-int create_webdav_memcache_element(const char *uri, int uri_length, struct vattr *vap,
+int create_webdav_memcache_element(const char *uri, int uri_length, struct stat *statbuf,
 	char *appledoubleheader, time_t now, webdav_memcache_element_t **element)
 {
 	int error;
@@ -148,7 +149,7 @@ int create_webdav_memcache_element(const char *uri, int uri_length, struct vattr
 	new_item->uri_length = uri_length;
 	strcpy(new_item->uri, uri);
 
-	bcopy(vap, &(new_item->vap), sizeof(struct vattr));
+	bcopy(statbuf, &(new_item->statbuf), sizeof(struct stat));
 
 	if (appledoubleheader)
 	{
@@ -196,7 +197,7 @@ exit:
 /*****************************************************************************/
 
 int webdav_memcache_insert(uid_t uid, const char *uri, webdav_memcache_header_t *cache_header,
-	struct vattr *vap, char *appledoubleheader)
+	struct stat *statbuf, char *appledoubleheader)
 {
 	webdav_memcache_element_t * new_item;
 	webdav_memcache_element_t * current_item;
@@ -244,7 +245,7 @@ int webdav_memcache_insert(uid_t uid, const char *uri, webdav_memcache_header_t 
 		 * since we know that we must insert. If this fails, we leave 
 		 * the existing slots alone.
 		 */
-		error = create_webdav_memcache_element(uri, uri_length, vap, appledoubleheader,
+		error = create_webdav_memcache_element(uri, uri_length, statbuf, appledoubleheader,
 			now, &new_item);
 		if (error)
 		{
@@ -349,7 +350,7 @@ int webdav_memcache_insert(uid_t uid, const char *uri, webdav_memcache_header_t 
 		}
 		
 		/* make the new item to insert */
-		error = create_webdav_memcache_element(uri, uri_length, vap, appledoubleheader,
+		error = create_webdav_memcache_element(uri, uri_length, statbuf, appledoubleheader,
 			now, &new_item);
 		if (error)
 		{
@@ -384,7 +385,7 @@ unlock:
 /*****************************************************************************/
 
 int webdav_memcache_retrieve(uid_t uid, char *uri,
-	webdav_memcache_header_t *cache_header, struct vattr *vap, char *appledoubleheader,
+	webdav_memcache_header_t *cache_header, struct stat *statbuf, char *appledoubleheader,
 	int32_t *lastvalidtime)
 {
 	webdav_memcache_element_t * current_item = 0;
@@ -446,7 +447,7 @@ int webdav_memcache_retrieve(uid_t uid, char *uri,
 			{
 				/* we found it, hurray */
 				/* copy it out of the cache while we have the lock */
-				bcopy(&(current_item->vap), vap, sizeof(struct vattr));
+				bcopy(&(current_item->statbuf), statbuf, sizeof(struct stat));
 				if (lastvalidtime)
 				{
 					*lastvalidtime = current_item->time_received;

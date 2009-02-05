@@ -5,23 +5,24 @@
  * Copyright (c) 1999 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- *
- * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
- * Reserved.  This file contains Original Code and/or Modifications of
- * Original Code as defined in and that are subject to the Apple Public
- * Source License Version 1.0 (the 'License').	You may not use this file
- * except in compliance with the License.  Please obtain a copy of the
- * License at http://www.apple.com/publicsource and read it before using
- * this file.
- *
+ * 
+ * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
+ * 
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
+ * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
- * License for the specific language governing rights and limitations
- * under the License."
- *
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
+ * 
  * @APPLE_LICENSE_HEADER_END@
  */
 /*		@(#)webdav_parse.h		*
@@ -33,29 +34,16 @@
  *		MODIFICATION HISTORY:
  *				19-JUL-99	  Clark Warner		File Creation
  */
-#include <stdio.h>
-#include <sys/dirent.h>
+
 #include <sys/types.h>
-#include <sys/vnode.h>
-#include <sys/param.h>
-#include <sys/mount.h>
-#include <CoreFoundation/CoreFoundation.h>
-#include "webdav_memcache.h"
-#include "../webdav_fs.kextproj/webdav_fs.kmodproj/vnops.h"
 
 /* Types */
 
-typedef struct webdav_parse_lookup_element_tag
-{
-	webdav_filetype_t file_type;
-	struct webdav_parse_lookup_element_tag *next;
-} webdav_parse_lookup_element_t;
-
 typedef struct
 {
-	webdav_parse_lookup_element_t *head;
-	webdav_parse_lookup_element_t *tail;
-} webdav_parse_lookup_struct_t;
+	int context;
+	char *locktoken;
+} webdav_parse_lock_struct_t;
 
 /* This needs to be big enough for a pathname where every character comes to us
  * in URI Escaped Encoding. That means that each character could expand to
@@ -108,8 +96,7 @@ typedef struct
 } webdav_parse_opendir_return_t;
 
 /* Functions */
-extern int parse_lookup(char *xmlp, int xmlp_len, webdav_filetype_t *a_file_type);
-extern int parse_stat(char *xmlp, int xmlp_len, const char *orig_uri, struct vattr *statbuf, uid_t uid);
+extern int parse_stat(char *xmlp, int xmlp_len, const char *orig_uri, struct stat *statbuf, uid_t uid, int add_cache);
 extern int parse_statfs(char *xmlp, int xmlp_len, struct statfs *statfsbuf);
 extern int parse_lock(char *xmlp, int xmlp_len, char **locktoken);
 extern int parse_opendir(char *xmlp, int xmlp_len, int fd, char *dir_name, char *hostname, uid_t uid);

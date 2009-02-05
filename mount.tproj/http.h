@@ -26,7 +26,7 @@
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- *	$Id: http.h,v 1.6 2003/09/08 18:31:15 lutherj Exp $
+ *	$Id: http.h,v 1.7 2004/04/20 15:40:50 lutherj Exp $
  */
 
 #ifndef http_h
@@ -38,11 +38,6 @@ extern int http_parse(struct fetch_state *fs, const char *key, int use_proxy);
 extern int get(struct fetch_state *volatile fs, int * download_status);
 extern int make_request(struct fetch_state *volatile fs,
 	int (*function)(struct fetch_state *fs, void *arg), void *arg,int do_close);
-extern int http_lookup(struct fetch_state *fs, void *arg);
-
-#ifdef NOT_NEEDED
-extern int http_opendir(struct fetch_state *fs, void * arg);
-#endif
 
 extern int http_stat(struct fetch_state *fs, void * arg);
 extern int http_statfs(struct fetch_state *fs, void * arg);

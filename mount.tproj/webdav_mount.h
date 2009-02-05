@@ -13,11 +13,6 @@
  *	@(#)webdav_mount.h	8.4 (Berkeley) 1/21/94
  */
 
-
-struct activate_args
-{
-	int proxy_ok;								/* ok to use proxy */
-	int socket;									/* socket for connection */
-};
+// еееее OBSOLETE HEADER
 
 #endif /*ifndef _WEBDAV_MOUNT_H_INCLUDE */

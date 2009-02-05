@@ -26,14 +26,11 @@
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- *	$Id: fetch.h,v 1.7 2003/04/29 21:02:54 lutherj Exp $
+ *	$Id: fetch.h,v 1.8 2004/06/03 20:59:03 lutherj Exp $
  */
 
 #ifndef fetch_h
 #define fetch_h 1
-
-#include "time.h"
-
 
 /* BUFFER_SIZE is the amount of data to copy per I/O operation when
  * downloading/uploading a file from/to the server. It should be 

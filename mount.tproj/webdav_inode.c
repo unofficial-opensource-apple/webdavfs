@@ -2,23 +2,24 @@
  * Copyright (c) 2001 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- *
- * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
- * Reserved.  This file contains Original Code and/or Modifications of
- * Original Code as defined in and that are subject to the Apple Public
- * Source License Version 1.0 (the 'License').	You may not use this file
- * except in compliance with the License.  Please obtain a copy of the
- * License at http://www.apple.com/publicsource and read it before using
- * this file.
- *
+ * 
+ * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
+ * 
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
+ * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
- * License for the specific language governing rights and limitations
- * under the License."
- *
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
+ * 
  * @APPLE_LICENSE_HEADER_END@
  */
 /*		@(#)webdav_inode.c		*
@@ -37,7 +38,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <pthread.h>
-#include <c.h>
 #include <errno.h>
 #include "webdavd.h"
 #include "webdav_inode.h"
@@ -85,7 +85,6 @@ int webdav_inode_init(char *uri, unsigned int urilen)
 {
 	int error;
 	pthread_mutexattr_t mutexattr;
-	webdav_file_record_t * filerec_ptr;
 
 	/* Zero the table */
 
@@ -110,31 +109,22 @@ int webdav_inode_init(char *uri, unsigned int urilen)
 	/* Now that everything has been built, put the initial URI
 	 * in as the root file id.	We don't use the lock yet since
 	 * we are still in the init path */
-	filerec_ptr = malloc(sizeof(webdav_file_record_t));
-
-	if (!filerec_ptr)
-	{
-		syslog(LOG_ERR, "webdav_inode_init: filerec_ptr could not be allocated: %s", strerror(errno));
-		return (ENOMEM);
-	}
-
-	filerec_ptr->uri = malloc(urilen + 1);
-	if (!filerec_ptr->uri)
+	gfilerec.uri = malloc(urilen + 1);
+	if (!gfilerec.uri)
 	{
 		syslog(LOG_ERR, "webdav_inode_init: uri could not be allocated: %s", strerror(errno));
-		free(filerec_ptr);
 		return (ENOMEM);
 	}
 
-	bcopy(uri, filerec_ptr->uri, urilen);
-	filerec_ptr->uri[urilen] = '\0';
+	bcopy(uri, gfilerec.uri, urilen);
+	gfilerec.uri[urilen] = '\0';
 
-	filerec_ptr->uri_length = urilen;
-	filerec_ptr->next = 0;
-	filerec_ptr->inode = WEBDAV_ROOTFILEID;
-	filerec_ptr->file_handle = -1;
+	gfilerec.uri_length = urilen;
+	gfilerec.next = 0;
+	gfilerec.inode = WEBDAV_ROOTFILEID;
+	gfilerec.file_handle = -1;
 
-	ginode_hashtbl[hashuri((const char *)uri, urilen) % WEBDAV_FILE_RECORD_HASH_BUCKETS] = filerec_ptr;
+	ginode_hashtbl[hashuri((const char *)uri, urilen) % WEBDAV_FILE_RECORD_HASH_BUCKETS] = &gfilerec;
 
 	return (0);
 }
@@ -145,10 +135,13 @@ int webdav_inode_init(char *uri, unsigned int urilen)
    and get the inode out for this uri.	If there is no
    entry, assign a new inode and make the entry */
 
-int webdav_get_inode(const char *uri, unsigned int length, int make_entry, int *inode)
+int webdav_get_inode(const char *uri, unsigned int length, int make_entry, u_int32_t *inode, object_ref *obj_ref)
 {
 	int hash_num, error = 0, error2 = 0, found = 0;
 	webdav_file_record_t * filerec_ptr,  *head_ptr;
+	
+	*inode = 0;
+	*obj_ref = 0;
 
 	error = pthread_mutex_lock(&ginode_lock);
 	if (error)
@@ -166,6 +159,7 @@ int webdav_get_inode(const char *uri, unsigned int length, int make_entry, int *
 		if ((filerec_ptr->uri_length == length) && !memcmp(uri, filerec_ptr->uri, length))
 		{
 			*inode = filerec_ptr->inode;
+			*obj_ref = (object_ref)filerec_ptr;
 			goto unlock;
 		}
 		else
@@ -215,11 +209,11 @@ int webdav_get_inode(const char *uri, unsigned int length, int make_entry, int *
 		filerec_ptr->next = head_ptr;
 		ginode_hashtbl[hash_num%WEBDAV_FILE_RECORD_HASH_BUCKETS] = filerec_ptr;
 		*inode = filerec_ptr->inode;
-
+		*obj_ref = (object_ref)filerec_ptr;
 	}
 	else
 	{
-		*inode = 0;
+		error = ENOENT;
 	}
 
 unlock:
@@ -244,7 +238,7 @@ unlock:
    and replace its inode number with the one specified.	 If there is no
    entry, make one with the given inode number */
 
-int webdav_set_inode(const char *uri, unsigned int length, int inode)
+int webdav_set_inode(const char *uri, unsigned int length, u_int32_t inode)
 {
 
 	int hash_num, error = 0, error2 = 0;

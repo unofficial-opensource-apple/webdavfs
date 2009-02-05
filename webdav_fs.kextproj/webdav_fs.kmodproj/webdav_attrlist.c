@@ -3,19 +3,22 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * The contents of this file constitute Original Code as defined in and
- * are subject to the Apple Public Source License Version 1.1 (the
- * "License").  You may not use this file except in compliance with the
- * License.  Please obtain a copy of the License at
- * http://www.apple.com/publicsource and read it before using this file.
+ * Copyright (c) 1999-2003 Apple Computer, Inc.  All Rights Reserved.
  * 
- * This Original Code and all software distributed under the License are
- * distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
+ * 
+ * The Original Code and all software distributed under the License are
+ * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
- * License for the specific language governing rights and limitations
- * under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -34,10 +37,12 @@
 #include <sys/attr.h>
 #include <sys/kernel.h>
 
+#include "webdav.h"
+
 /*****************************************************************************/
 
 __private_extern__ int 
-webdav_getattrlist(struct vop_getattrlist_args *ap);
+webdav_vnop_getattrlist(struct vnop_getattrlist_args *ap);
 
 /*****************************************************************************/
 
@@ -62,26 +67,6 @@ enum
 	WEBDAV_ATTR_FILE_SETTABLE	= 0,
 	WEBDAV_ATTR_FORK_SETTABLE	= 0
 };
-
-/*****************************************************************************/
-
-/*
- * Copied from LibC string/rindex.c
- */
-char *strrchr(p, ch)
-        register const char *p;
-        register int ch;
-{
-	register char *save;
-
-	for (save = NULL;; ++p) {
-		if (*p == ch)
-			save = (char *)p;
-		if (!*p)
-			return(save);
-	}
-	/* NOTREACHED */
-}
 
 /*****************************************************************************/
 
@@ -122,13 +107,11 @@ packstr(char *s, void *attrptr, void *varptr)
  * The buffer pointers are updated to point past the data that was returned.
  */
 static int webdav_packvolattr(
-    struct vnode *vp,		/* The volume's vnode */
-    struct ucred *cred,
+    vnode_t vp,		/* The volume's vnode */
     struct attrlist *alist,	/* Desired attributes */
     void **attrptrptr,		/* Fixed-size attributes buffer */
     void **varptrptr)		/* Variable-size attributes buffer */
 {
-	#pragma unused(cred)
 	attrgroup_t a;
 	void *attrptr = *attrptrptr;
 	void *varptr = *varptrptr;
@@ -138,11 +121,7 @@ static int webdav_packvolattr(
 	{
 		if (a & ATTR_VOL_NAME)
 		{
-			/* mount_webdav uses realpath() on f_mntonname so f_mntonname
-			 * is NULL terminated and does not end with a slash.
-			 */
-			varptr = packstr(strrchr(vp->v_mount->mnt_stat.f_mntonname, '/') + 1,
-				attrptr, varptr);
+			varptr = packstr(VFSTOWEBDAV(vnode_mount(vp))->pm_vol_name, attrptr, varptr);
 			++((struct attrreference *)attrptr);
 		}
 
@@ -242,12 +221,12 @@ static int webdav_packvolattr(
  * the result buffer.  For now, we only support volume attributes.
  */
 static void
-webdav_packattr(struct vnode *vp, struct ucred *cred, struct attrlist *alist,
+webdav_packattr(vnode_t vp, struct attrlist *alist,
 	void **attrptr, void **varptr)
 {
 	if (alist->volattr != 0)
 	{
-		webdav_packvolattr(vp, cred, alist, attrptr, varptr);
+		webdav_packvolattr(vp, alist, attrptr, varptr);
 	}
 }
 
@@ -337,19 +316,18 @@ webdav_attrsize(struct attrlist *attrlist)
 #
 #% getattrlist	vp	= = =
 #
- vop_getattrlist {
-     IN struct vnode *vp;
-     IN struct attrlist *alist;
-     INOUT struct uio *uio;
-     IN struct ucred *cred;
-     IN struct proc *p;
- };
-
+struct vnop_getattrlist_args {
+	struct vnodeop_desc *a_desc;
+	vnode_t a_vp;
+	struct attrlist *a_alist;
+	struct uio *a_uio;
+	vfs_context_t a_context;
+};
  */
 __private_extern__ int 
-webdav_getattrlist(struct vop_getattrlist_args *ap)
+webdav_vnop_getattrlist(struct vnop_getattrlist_args *ap)
 {
-	struct vnode	*vp = ap->a_vp;
+	vnode_t vp = ap->a_vp;
 	struct attrlist	*alist = ap->a_alist;
 	size_t		 fixedblocksize;
 	size_t		 attrblocksize;
@@ -404,7 +382,7 @@ webdav_getattrlist(struct vop_getattrlist_args *ap)
 	/*
 	 * Requesting volume information requires a vnode for the volume root.
 	 */
-	if (alist->volattr && (vp->v_flag & VROOT) == 0)
+	if (alist->volattr && (vnode_isvroot(vp)) == 0)
 	{
 		return EINVAL;
 	}
@@ -422,7 +400,7 @@ webdav_getattrlist(struct vop_getattrlist_args *ap)
 	++((u_long *)attrptr);     /* skip over length field */
 	varptr = ((char *)attrptr) + fixedblocksize;
 
-	webdav_packattr(vp, ap->a_cred, alist, &attrptr, &varptr);
+	webdav_packattr(vp, alist, &attrptr, &varptr);
 
 	/* Don't return more data than was generated */
 	attrbufsize = MIN(attrbufsize, (size_t) varptr - (size_t) attrbufptr);
@@ -433,5 +411,6 @@ webdav_getattrlist(struct vop_getattrlist_args *ap)
 	error = uiomove((caddr_t) attrbufptr, attrbufsize, ap->a_uio);
 
 	FREE(attrbufptr, M_TEMP);
-	return error;
+	
+	RET_ERR("webdav_vnop_getattrlist", error);
 }
